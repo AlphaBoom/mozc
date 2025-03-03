@@ -41,14 +41,15 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "base/container/serialized_string_array.h"
-#include "base/logging.h"
-#include "base/protobuf/protobuf.h"
 #include "base/text_normalizer.h"
 #include "base/util.h"
 #include "converter/segments.h"
-#include "data_manager/data_manager_interface.h"
+#include "data_manager/data_manager.h"
 #include "data_manager/emoji_data.h"
 #include "protocol/commands.pb.h"
 #include "request/conversion_request.h"
@@ -140,7 +141,7 @@ std::vector<AdditionalRenderableCharacterGroup> GetNonrenderableGroups(
     const ::mozc::protobuf::RepeatedField<int> &additional_groups) {
   // WARNING: Though it is named k'All'Cases, 'Empty' is intentionally omitted
   // here. All other cases should be added.
-  constexpr std::array<AdditionalRenderableCharacterGroup, 11> kAllCases = {
+  constexpr std::array<AdditionalRenderableCharacterGroup, 12> kAllCases = {
       commands::Request::KANA_SUPPLEMENT_6_0,
       commands::Request::KANA_SUPPLEMENT_AND_KANA_EXTENDED_A_10_0,
       commands::Request::KANA_EXTENDED_A_14_0,
@@ -150,6 +151,7 @@ std::vector<AdditionalRenderableCharacterGroup> GetNonrenderableGroups(
       commands::Request::EMOJI_14_0,
       commands::Request::EMOJI_15_0,
       commands::Request::EMOJI_15_1,
+      commands::Request::EMOJI_16_0,
       commands::Request::EGYPTIAN_HIEROGLYPH_5_2,
       commands::Request::IVS_CHARACTER,
   };
@@ -203,7 +205,7 @@ EmojiDataIterator end(const absl::string_view token_array_data) {
 
 absl::flat_hash_map<EmojiVersion, std::vector<std::u32string>>
 ExtractTargetEmojis(
-    const std::vector<EmojiVersion> &target_versions,
+    absl::Span<const EmojiVersion> target_versions,
     const std::pair<EmojiDataIterator, EmojiDataIterator> &range,
     const SerializedStringArray &string_array) {
   absl::flat_hash_map<EmojiVersion, std::vector<std::u32string>> results;
@@ -237,7 +239,7 @@ std::u32string SortAndUnique(std::u32string_view codepoints) {
 }  // namespace
 
 void CharacterGroupFinder::Initialize(
-    const std::vector<std::u32string> &target_codepoints) {
+    absl::Span<const std::u32string> target_codepoints) {
   std::u32string single_codepoints;
   for (const auto &codepoints : target_codepoints) {
     const size_t size = codepoints.size();
@@ -364,7 +366,7 @@ int EnvironmentalFilterRewriter::capability(
 }
 
 EnvironmentalFilterRewriter::EnvironmentalFilterRewriter(
-    const DataManagerInterface &data_manager) {
+    const DataManager &data_manager) {
   absl::string_view token_array_data;
   absl::string_view string_array_data;
 
@@ -381,7 +383,8 @@ EnvironmentalFilterRewriter::EnvironmentalFilterRewriter(
   const absl::flat_hash_map<EmojiVersion, std::vector<std::u32string>>
       version_to_targets = ExtractTargetEmojis(
           {EmojiVersion::E12_1, EmojiVersion::E13_0, EmojiVersion::E13_1,
-           EmojiVersion::E14_0, EmojiVersion::E15_0, EmojiVersion::E15_1},
+           EmojiVersion::E14_0, EmojiVersion::E15_0, EmojiVersion::E15_1,
+           EmojiVersion::E16_0},
           range, string_array);
   finder_e12_1_.Initialize(version_to_targets.at(EmojiVersion::E12_1));
   finder_e13_0_.Initialize(version_to_targets.at(EmojiVersion::E13_0));
@@ -389,6 +392,7 @@ EnvironmentalFilterRewriter::EnvironmentalFilterRewriter(
   finder_e14_0_.Initialize(version_to_targets.at(EmojiVersion::E14_0));
   finder_e15_0_.Initialize(version_to_targets.at(EmojiVersion::E15_0));
   finder_e15_1_.Initialize(version_to_targets.at(EmojiVersion::E15_1));
+  finder_e16_0_.Initialize(version_to_targets.at(EmojiVersion::E16_0));
 }
 
 bool EnvironmentalFilterRewriter::Rewrite(const ConversionRequest &request,
@@ -399,13 +403,10 @@ bool EnvironmentalFilterRewriter::Rewrite(const ConversionRequest &request,
           request.request().additional_renderable_character_groups());
 
   bool modified = false;
-  for (size_t i = 0; i < segments->conversion_segments_size(); ++i) {
-    Segment *segment = segments->mutable_conversion_segment(i);
-    DCHECK(segment);
-
+  for (Segment &segment : segments->conversion_segments()) {
     // Meta candidate
-    for (size_t j = 0; j < segment->meta_candidates_size(); ++j) {
-      Segment::Candidate *candidate = segment->mutable_meta_candidate(j);
+    for (size_t j = 0; j < segment.meta_candidates_size(); ++j) {
+      Segment::Candidate *candidate = segment.mutable_meta_candidate(j);
       DCHECK(candidate);
       if (ShouldKeepCandidate(*candidate)) {
         continue;
@@ -414,11 +415,11 @@ bool EnvironmentalFilterRewriter::Rewrite(const ConversionRequest &request,
     }
 
     // Regular candidate.
-    const size_t candidates_size = segment->candidates_size();
+    const size_t candidates_size = segment.candidates_size();
 
     for (size_t j = 0; j < candidates_size; ++j) {
       const size_t reversed_j = candidates_size - j - 1;
-      Segment::Candidate *candidate = segment->mutable_candidate(reversed_j);
+      Segment::Candidate *candidate = segment.mutable_candidate(reversed_j);
       DCHECK(candidate);
 
       if (ShouldKeepCandidate(*candidate)) {
@@ -432,7 +433,7 @@ bool EnvironmentalFilterRewriter::Rewrite(const ConversionRequest &request,
 
       // Check acceptability of code points as a candidate.
       if (!CheckCodepointsAcceptable(codepoints)) {
-        segment->erase_candidate(reversed_j);
+        segment.erase_candidate(reversed_j);
         modified = true;
         continue;
       }
@@ -490,6 +491,9 @@ bool EnvironmentalFilterRewriter::Rewrite(const ConversionRequest &request,
           case commands::Request::EMOJI_15_1:
             found_nonrenderable = finder_e15_1_.FindMatch(codepoints);
             break;
+          case commands::Request::EMOJI_16_0:
+            found_nonrenderable = finder_e16_0_.FindMatch(codepoints);
+            break;
           case commands::Request::EGYPTIAN_HIEROGLYPH_5_2:
             found_nonrenderable =
                 FindCodepointsInClosedRange(codepoints, 0x13000, 0x1342E);
@@ -500,7 +504,7 @@ bool EnvironmentalFilterRewriter::Rewrite(const ConversionRequest &request,
             break;
         }
         if (found_nonrenderable) {
-          segment->erase_candidate(reversed_j);
+          segment.erase_candidate(reversed_j);
           modified = true;
           break;
         }

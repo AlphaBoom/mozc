@@ -30,18 +30,19 @@
 #include "rewriter/emoticon_rewriter.h"
 
 #include <algorithm>
-#include <cstdint>
 #include <cstring>
 #include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/random/random.h"
 #include "absl/strings/string_view.h"
-#include "base/logging.h"
 #include "base/vlog.h"
 #include "converter/segments.h"
+#include "data_manager/data_manager.h"
 #include "data_manager/serialized_dictionary.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
@@ -149,8 +150,7 @@ void InsertCandidates(SerializedDictionary::const_iterator begin,
 
 bool EmoticonRewriter::RewriteCandidate(Segments *segments) const {
   bool modified = false;
-  for (size_t i = 0; i < segments->conversion_segments_size(); ++i) {
-    const Segment &segment = segments->conversion_segment(i);
+  for (Segment &segment : segments->conversion_segments()) {
     const std::string &key = segment.key();
     if (key.empty()) {
       // This case happens for zero query suggestion.
@@ -209,7 +209,7 @@ bool EmoticonRewriter::RewriteCandidate(Segments *segments) const {
     }
 
     InsertCandidates(begin, end, initial_insert_pos, initial_insert_size,
-                     is_no_learning, segments->mutable_conversion_segment(i));
+                     is_no_learning, &segment);
     modified = true;
   }
 
@@ -217,7 +217,7 @@ bool EmoticonRewriter::RewriteCandidate(Segments *segments) const {
 }
 
 std::unique_ptr<EmoticonRewriter> EmoticonRewriter::CreateFromDataManager(
-    const DataManagerInterface &data_manager) {
+    const DataManager &data_manager) {
   absl::string_view token_array_data, string_array_data;
   data_manager.GetEmoticonRewriterData(&token_array_data, &string_array_data);
   return std::make_unique<EmoticonRewriter>(token_array_data,

@@ -29,7 +29,25 @@
 
 #include "gui/word_register_dialog/word_register_dialog.h"
 
+#include <QMessageBox>
+#include <QtGui>
 #include <cstdint>
+#include <cstdlib>
+#include <string>
+#include <vector>
+
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/time/time.h"
+#include "base/const.h"
+#include "client/client.h"
+#include "data_manager/pos_list_provider.h"
+#include "dictionary/user_dictionary_session.h"
+#include "dictionary/user_dictionary_storage.h"
+#include "dictionary/user_dictionary_util.h"
+#include "gui/base/util.h"
+#include "protocol/user_dictionary_storage.pb.h"
 
 #if defined(__ANDROID__) || defined(__wasm__)
 #error "This platform is not supported."
@@ -40,28 +58,11 @@
 #include <windows.h>
 #include <imm.h>
 // clang-format on
+
+#include <memory>
+
+#include "base/win32/wide_char.h"
 #endif  // _WIN32
-
-#include <QMessageBox>
-#include <QtGui>
-#include <cstdlib>
-#ifdef _WIN32
-#include <memory>  // for std::unique_ptr
-#endif             // _WIN32
-#include <string>
-#include <vector>
-
-#include "absl/time/time.h"
-#include "base/const.h"
-#include "base/logging.h"
-#include "base/util.h"
-#include "client/client.h"
-#include "data_manager/pos_list_provider.h"
-#include "dictionary/user_dictionary_session.h"
-#include "dictionary/user_dictionary_storage.h"
-#include "dictionary/user_dictionary_util.h"
-#include "gui/base/util.h"
-#include "protocol/user_dictionary_storage.pb.h"
 
 namespace mozc {
 namespace gui {
@@ -78,8 +79,7 @@ constexpr int kMaxReverseConversionLength = 30;
 
 QString GetEnv(const char *envname) {
 #if defined(_WIN32)
-  std::wstring wenvname;
-  mozc::Util::Utf8ToWide(envname, &wenvname);
+  const std::wstring wenvname = mozc::win32::Utf8ToWide(envname);
   const DWORD buffer_size =
       ::GetEnvironmentVariable(wenvname.c_str(), nullptr, 0);
   if (buffer_size == 0) {
@@ -358,13 +358,13 @@ void WordRegisterDialog::LaunchDictionaryTool() {
   QWidget::close();
 }
 
-const QString WordRegisterDialog::GetReading(const QString &str) {
+QString WordRegisterDialog::GetReading(const QString &str) {
   if (str.isEmpty()) {
     LOG(ERROR) << "given string is empty";
     return QLatin1String("");
   }
 
-  if (str.count() >= kMaxReverseConversionLength) {
+  if (str.size() >= kMaxReverseConversionLength) {
     LOG(ERROR) << "too long input";
     return QLatin1String("");
   }
@@ -398,10 +398,7 @@ const QString WordRegisterDialog::GetReading(const QString &str) {
   }
 
   std::string key;
-  for (size_t segment_index = 0;
-       segment_index < output.preedit().segment_size(); ++segment_index) {
-    const commands::Preedit::Segment &segment =
-        output.preedit().segment(segment_index);
+  for (const commands::Preedit::Segment &segment : output.preedit().segment()) {
     if (!segment.has_key()) {
       LOG(ERROR) << "No segment";
       return QLatin1String("");
@@ -454,9 +451,8 @@ void WordRegisterDialog::CopyCurrentSelectionToClipboard() {
   }
 
   constexpr DWORD kSendMessageTimeout = 10 * 1000;  // 10sec.
-  const LRESULT send_result =
-      ::SendMessageTimeout(focus_window, WM_COPY, 0, 0, SMTO_NORMAL,
-                           kSendMessageTimeout, nullptr);
+  const LRESULT send_result = ::SendMessageTimeout(
+      focus_window, WM_COPY, 0, 0, SMTO_NORMAL, kSendMessageTimeout, nullptr);
   if (send_result == 0) {
     LOG(ERROR) << "SendMessageTimeout() failed: " << ::GetLastError();
   }
@@ -480,7 +476,7 @@ bool WordRegisterDialog::SetDefaultEntryFromEnvironmentVariable() {
   return true;
 }
 
-const QString WordRegisterDialog::TrimValue(const QString &str) const {
+QString WordRegisterDialog::TrimValue(const QString &str) const {
   return str.trimmed()
       .replace(QLatin1Char('\r'), QLatin1String(""))
       .replace(QLatin1Char('\n'), QLatin1String(""));

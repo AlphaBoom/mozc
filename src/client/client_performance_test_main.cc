@@ -28,7 +28,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <algorithm>
-#include <climits>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -45,6 +45,8 @@
 
 #include "absl/algorithm/container.h"
 #include "absl/flags/flag.h"
+#include "absl/log/check.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
@@ -52,7 +54,6 @@
 #include "base/file_stream.h"
 #include "base/init_mozc.h"
 #include "base/japanese_util.h"
-#include "base/logging.h"
 #include "base/singleton.h"
 #include "base/stopwatch.h"
 #include "base/util.h"
@@ -75,7 +76,7 @@ struct Result {
 
 class TestSentenceGenerator {
  public:
-  const std::vector<std::vector<commands::KeyEvent>> &GetTestKeys() const {
+  absl::Span<const std::vector<commands::KeyEvent>> GetTestKeys() const {
     return keys_;
   }
 
@@ -86,14 +87,13 @@ class TestSentenceGenerator {
     const size_t size = std::min<size_t>(200, sentences.size());
 
     for (size_t i = 0; i < size; ++i) {
-      std::string output;
-      japanese_util::HiraganaToRomanji(sentences[i], &output);
+      std::string output = japanese_util::HiraganaToRomanji(sentences[i]);
       std::vector<commands::KeyEvent> tmp;
       for (ConstChar32Iterator iter(output); !iter.Done(); iter.Next()) {
-        const char32_t ucs4 = iter.Get();
-        if (ucs4 >= 'a' && ucs4 <= 'z') {
+        const char32_t codepoint = iter.Get();
+        if (codepoint >= 'a' && codepoint <= 'z') {
           commands::KeyEvent key;
-          key.set_key_code(static_cast<int>(ucs4));
+          key.set_key_code(static_cast<int>(codepoint));
           tmp.push_back(key);
         }
       }
@@ -161,7 +161,7 @@ class TestScenarioInterface {
   commands::Output output_;
 };
 
-std::string GetBasicStats(const std::vector<absl::Duration> &times) {
+std::string GetBasicStats(absl::Span<const absl::Duration> times) {
   std::vector<uint64_t> temp;
   temp.resize(times.size());
   absl::c_transform(times, temp.begin(), absl::ToInt64Microseconds);
@@ -193,7 +193,7 @@ std::string GetBasicStats(const std::vector<absl::Duration> &times) {
 class PreeditCommon : public TestScenarioInterface {
  protected:
   virtual void RunTest(Result *result) {
-    const std::vector<std::vector<commands::KeyEvent>> &keys =
+    absl::Span<const std::vector<commands::KeyEvent>> keys =
         Singleton<TestSentenceGenerator>::get()->GetTestKeys();
     for (size_t i = 0; i < keys.size(); ++i) {
       for (int j = 0; j < keys[i].size(); ++j) {
@@ -247,25 +247,24 @@ void CreatePredictionKeys(PredictionRequestType type,
   CHECK(request_keys);
   request_keys->clear();
 
-  const char *kVoels[] = {"a", "i", "u", "e", "o"};
-  const char *kConsonant[] = {"k", "s", "t", "n", "h", "m", "y", "r", "w"};
-  std::vector<std::string> one_chars;
-  for (size_t i = 0; i < std::size(kVoels); ++i) {
-    one_chars.push_back(kVoels[i]);
-  }
+  constexpr std::array<absl::string_view, 5> kVoels = {"a", "i", "u", "e", "o"};
+  constexpr std::array<absl::string_view, 10> kConsonants = {
+      "", "k", "s", "t", "n", "h", "m", "y", "r", "w"};
 
-  for (size_t i = 0; i < std::size(kConsonant); ++i) {
-    for (size_t j = 0; j < std::size(kVoels); ++j) {
-      one_chars.push_back(std::string(kConsonant[i]) + std::string(kVoels[j]));
+  std::vector<std::string> one_chars;
+  for (absl::string_view c : kConsonants) {
+    for (absl::string_view v : kVoels) {
+      one_chars.push_back(absl::StrCat(c, v));
     }
   }
 
   std::vector<std::string> two_chars;
-  for (size_t i = 0; i < one_chars.size(); ++i) {
-    for (size_t j = 0; j < one_chars.size(); ++j) {
-      two_chars.push_back(one_chars[i] + one_chars[j]);
+  for (absl::string_view c1 : one_chars) {
+    for (absl::string_view c2 : one_chars) {
+      two_chars.push_back(absl::StrCat(c1, c2));
     }
   }
+
   switch (type) {
     case ONE_CHAR:
       std::copy(one_chars.begin(), one_chars.end(),
@@ -342,7 +341,7 @@ class Conversion : public TestScenarioInterface {
     DisableSuggestion();
     IMEOn();
 
-    const std::vector<std::vector<commands::KeyEvent>> &keys =
+    absl::Span<const std::vector<commands::KeyEvent>> keys =
         Singleton<TestSentenceGenerator>::get()->GetTestKeys();
     for (size_t i = 0; i < keys.size(); ++i) {
       for (int j = 0; j < keys[i].size(); ++j) {

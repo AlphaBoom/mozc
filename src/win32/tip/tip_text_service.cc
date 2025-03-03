@@ -36,6 +36,8 @@
 #include <wil/com.h>
 #include <windows.h>
 
+#include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -45,9 +47,10 @@
 #include "absl/base/casts.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/functional/any_invocable.h"
+#include "absl/log/log.h"
 #include "base/const.h"
 #include "base/file_util.h"
-#include "base/logging.h"
+#include "base/log_file.h"
 #include "base/process.h"
 #include "base/system_util.h"
 #include "base/update_util.h"
@@ -149,7 +152,6 @@ constexpr GUID kTipFunctionProvider = {
 #else  // GOOGLE_JAPANESE_INPUT_BUILD
 
 constexpr char kHelpUrl[] = "https://github.com/google/mozc";
-constexpr char kLogFileName[] = "Mozc_tsf_ui.log";
 constexpr wchar_t kTaskWindowClassName[] =
     L"Mozc Immersive Task Message Window";
 
@@ -205,7 +207,8 @@ commands::CompositionMode GetMozcMode(TipLangBarCallback::ItemId menu_id) {
     case TipLangBarCallback::kHalfKatakana:
       return commands::HALF_KATAKANA;
     default:
-      DLOG(FATAL) << "Must not reach here.";
+      DLOG(FATAL) << "Unexpected item id: " << menu_id;
+      // Fall back to DIRECT in release builds.
       return commands::DIRECT;
   }
 }
@@ -225,7 +228,7 @@ std::string GetMozcToolCommand(TipLangBarCallback::ItemId menu_id) {
       // Open the about dialog.
       return "about_dialog";
     default:
-      DLOG(FATAL) << "Must not reach here.";
+      DLOG(FATAL) << "Unexpected item id: " << menu_id;
       return "";
   }
 }
@@ -248,15 +251,11 @@ wil::com_ptr_nothrow<ITfCategoryMgr> GetCategoryMgr() {
 template <typename T>
 struct ComPtrHash {
   size_t operator()(const wil::com_ptr_nothrow<T> &value) const {
-    // Caveats: On x86 environment, both _M_X64 and _M_IX86 are defined. So we
-    //     need to check _M_X64 first.
-#if defined(_M_X64)
-    constexpr size_t kUnusedBits = 3;  // assuming 8-byte aligned
-#elif defined(_M_IX86)                 // defined(_M_X64)
-    constexpr size_t kUnusedBits = 2;  // assuming 4-byte aligned
-#else                                  // defined(_M_IX86)
-#error "unsupported platform"
-#endif  // defined(_M_IX86)
+    // The minimum size of COM objects is the pointer to vtable.
+    // For instance the last 3 bits are guaranteed to be zero on 64-bit
+    // processes.
+    constexpr size_t kUnusedBits =
+        std::max(std::bit_width(sizeof(void *)), 1) - 1;
     // Compress the data by shifting unused bits.
     return reinterpret_cast<size_t>(value.get()) >> kUnusedBits;
   }
@@ -509,8 +508,6 @@ class TipTextServiceImpl
     StorePointerForCurrentThread(this);
 
     HRESULT result = E_UNEXPECTED;
-    Logging::InitLogStream(
-        FileUtil::JoinPath(SystemUtil::GetLoggingDirectory(), kLogFileName));
 
     EnsureKanaLockUnlocked();
 

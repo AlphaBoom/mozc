@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -43,13 +44,13 @@
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/numeric/bits.h"
 #include "absl/strings/ascii.h"
-#include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
-#include "base/logging.h"
 #include "base/strings/unicode.h"
 
 #ifdef _WIN32
@@ -95,16 +96,36 @@ void ConstChar32ReverseIterator::Next() {
 
 bool ConstChar32ReverseIterator::Done() const { return done_; }
 
-void Util::SplitStringToUtf8Chars(absl::string_view str,
-                                  std::vector<std::string> *output) {
+namespace {
+
+template <typename T>
+void AppendUtf8CharsImpl(absl::string_view str, std::vector<T> &output) {
   const char *begin = str.data();
   const char *const end = str.data() + str.size();
   while (begin < end) {
-    const size_t mblen = OneCharLen(begin);
-    output->emplace_back(begin, mblen);
+    const size_t mblen = strings::OneCharLen(begin);
+    output.emplace_back(begin, mblen);
     begin += mblen;
   }
   DCHECK_EQ(begin, end);
+}
+
+}  // namespace
+
+std::vector<std::string> Util::SplitStringToUtf8Chars(absl::string_view str) {
+  std::vector<std::string> output;
+  AppendUtf8Chars(str, output);
+  return output;
+}
+
+void Util::AppendUtf8Chars(absl::string_view str,
+                           std::vector<std::string> &output) {
+  AppendUtf8CharsImpl(str, output);
+}
+
+void Util::AppendUtf8Chars(absl::string_view str,
+                           std::vector<absl::string_view> &output) {
+  AppendUtf8CharsImpl(str, output);
 }
 
 // Grapheme is user-perceived character. It may contain multiple codepoints
@@ -114,7 +135,7 @@ void Util::SplitStringToUtf8Chars(absl::string_view str,
 // * https://www.unicode.org/reports/tr29/#Grapheme_Cluster_Boundaries
 void Util::SplitStringToUtf8Graphemes(absl::string_view str,
                                       std::vector<std::string> *graphemes) {
-  Util::SplitStringToUtf8Chars(str, graphemes);
+  *graphemes = SplitStringToUtf8Chars(str);
   if (graphemes->size() <= 1) {
     return;
   }
@@ -127,7 +148,7 @@ void Util::SplitStringToUtf8Graphemes(absl::string_view str,
   new_graphemes.reserve(graphemes->capacity());
 
   for (std::string &grapheme : *graphemes) {
-    const char32_t codepoint = Util::Utf8ToUcs4(grapheme);
+    const char32_t codepoint = Util::Utf8ToCodepoint(grapheme);
     const bool is_dakuten = (codepoint == 0x3099 || codepoint == 0x309A);
     const bool is_svs = (0xFE00 <= codepoint && codepoint <= 0xFE0F);
     const bool is_ivs = (0xE0100 <= codepoint && codepoint <= 0xE01EF);
@@ -244,55 +265,44 @@ constexpr size_t kOffsetFromUpperToLower = 0x0020;
 }
 
 void Util::LowerString(std::string *str) {
-  const char *begin = str->data();
-  size_t mblen = 0;
-
-  std::string utf8;
-  size_t pos = 0;
-  while (pos < str->size()) {
-    char32_t ucs4 = Utf8ToUcs4(begin + pos, begin + str->size(), &mblen);
-    if (mblen == 0) {
-      break;
-    }
-    // ('A' <= ucs4 && ucs4 <= 'Z') || ('Ａ' <= ucs4 && ucs4 <= 'Ｚ')
-    if ((0x0041 <= ucs4 && ucs4 <= 0x005A) ||
-        (0xFF21 <= ucs4 && ucs4 <= 0xFF3A)) {
-      ucs4 += kOffsetFromUpperToLower;
-      Ucs4ToUtf8(ucs4, &utf8);
+  for (const UnicodeChar ch : Utf8AsUnicodeChar(*str)) {
+    char32_t codepoint = ch.char32();
+    // ('A' <= codepoint && codepoint <= 'Z') ||
+    // ('Ａ' <= codepoint && codepoint <= 'Ｚ')
+    if ((0x0041 <= codepoint && codepoint <= 0x005A) ||
+        (0xFF21 <= codepoint && codepoint <= 0xFF3A)) {
+      codepoint += kOffsetFromUpperToLower;
+      const std::string utf8 = CodepointToUtf8(codepoint);
       // The size of upper case character must be equal to the source
       // lower case character.  The following check asserts it.
-      if (utf8.size() != mblen) {
+      if (utf8.size() != ch.utf8().size()) {
         LOG(ERROR) << "The generated size differs from the source.";
         return;
       }
-      str->replace(pos, mblen, utf8);
+      const size_t pos = ch.utf8().data() - str->data();
+      str->replace(pos, ch.utf8().size(), utf8);
     }
-    pos += mblen;
   }
 }
 
 void Util::UpperString(std::string *str) {
-  const char *begin = str->data();
-  size_t mblen = 0;
-
-  std::string utf8;
-  size_t pos = 0;
-  while (pos < str->size()) {
-    char32_t ucs4 = Utf8ToUcs4(begin + pos, begin + str->size(), &mblen);
-    // ('a' <= ucs4 && ucs4 <= 'z') || ('ａ' <= ucs4 && ucs4 <= 'ｚ')
-    if ((0x0061 <= ucs4 && ucs4 <= 0x007A) ||
-        (0xFF41 <= ucs4 && ucs4 <= 0xFF5A)) {
-      ucs4 -= kOffsetFromUpperToLower;
-      Ucs4ToUtf8(ucs4, &utf8);
+  for (const UnicodeChar ch : Utf8AsUnicodeChar(*str)) {
+    char32_t codepoint = ch.char32();
+    // ('a' <= codepoint && codepoint <= 'z') ||
+    // ('ａ' <= codepoint && codepoint <= 'ｚ')
+    if ((0x0061 <= codepoint && codepoint <= 0x007A) ||
+        (0xFF41 <= codepoint && codepoint <= 0xFF5A)) {
+      codepoint -= kOffsetFromUpperToLower;
+      const std::string utf8 = CodepointToUtf8(codepoint);
       // The size of upper case character must be equal to the source
       // lower case character.  The following check asserts it.
-      if (utf8.size() != mblen) {
+      if (utf8.size() != ch.utf8().size()) {
         LOG(ERROR) << "The generated size differs from the source.";
         return;
       }
-      str->replace(pos, mblen, utf8);
+      const size_t pos = ch.utf8().data() - str->data();
+      str->replace(pos, ch.utf8().size(), utf8);
     }
-    pos += mblen;
   }
 }
 
@@ -330,18 +340,11 @@ bool IsUtf8TrailingByte(uint8_t c) { return (c & 0xc0) == 0x80; }
 
 }  // namespace
 
-// Return length of a single UTF-8 source character
-size_t Util::OneCharLen(const char *src) {
-  return strings::OneCharLen(*src);
-}
-
-size_t Util::CharsLen(const char *src, size_t size) {
-  const char *begin = src;
-  const char *end = src + size;
-  int length = 0;
-  while (begin < end) {
+size_t Util::CharsLen(absl::string_view str) {
+  size_t length = 0;
+  while (!str.empty()) {
     ++length;
-    begin += OneCharLen(begin);
+    str = absl::ClippedSubstr(str, strings::OneCharLen(str.begin()));
   }
   return length;
 }
@@ -358,12 +361,13 @@ std::u32string Util::Utf8ToUtf32(absl::string_view str) {
 std::string Util::Utf32ToUtf8(const std::u32string_view str) {
   std::string output;
   for (const char32_t codepoint : str) {
-    Ucs4ToUtf8Append(codepoint, &output);
+    CodepointToUtf8Append(codepoint, &output);
   }
   return output;
 }
 
-char32_t Util::Utf8ToUcs4(const char *begin, const char *end, size_t *mblen) {
+char32_t Util::Utf8ToCodepoint(const char *begin, const char *end,
+                               size_t *mblen) {
   absl::string_view s(begin, end - begin);
   absl::string_view rest;
   char32_t c = 0;
@@ -515,20 +519,21 @@ bool Util::IsValidUtf8(absl::string_view s) {
   return true;
 }
 
-void Util::Ucs4ToUtf8(char32_t c, std::string *output) {
-  output->clear();
-  Ucs4ToUtf8Append(c, output);
+std::string Util::CodepointToUtf8(char32_t c) {
+  std::string output;
+  CodepointToUtf8Append(c, &output);
+  return output;
 }
 
-void Util::Ucs4ToUtf8Append(char32_t c, std::string *output) {
+void Util::CodepointToUtf8Append(char32_t c, std::string *output) {
   char buf[7];
-  output->append(buf, Ucs4ToUtf8(c, buf));
+  output->append(buf, CodepointToUtf8(c, buf));
 }
 
-size_t Util::Ucs4ToUtf8(char32_t c, char *output) {
+size_t Util::CodepointToUtf8(char32_t c, char *output) {
   if (c == 0) {
-    // Do nothing if |c| is NUL. Previous implementation of Ucs4ToUtf8Append
-    // worked like this.
+    // Do nothing if |c| is `\0`. Previous implementation of
+    // CodepointToUtf8Append worked like this.
     output[0] = '\0';
     return 0;
   }
@@ -578,42 +583,11 @@ size_t Util::Ucs4ToUtf8(char32_t c, char *output) {
   return 6;
 }
 
-#ifdef _WIN32
-size_t Util::WideCharsLen(absl::string_view src) {
-  return win32::WideCharsLen(src);
-}
-
-int Util::Utf8ToWide(absl::string_view input, std::wstring *output) {
-  *output = win32::Utf8ToWide(input);
-  return output->size();
-}
-
-std::wstring Util::Utf8ToWide(absl::string_view input) {
-  return win32::Utf8ToWide(input);
-}
-
-int Util::WideToUtf8(const wchar_t *input, std::string *output) {
-  if (input == nullptr) {
-    return 0;
-  }
-  *output = win32::WideToUtf8(input);
-  return output->size();
-}
-
-int Util::WideToUtf8(const std::wstring &input, std::string *output) {
-  return WideToUtf8(input.c_str(), output);
-}
-
-std::string Util::WideToUtf8(const std::wstring &input) {
-  return win32::WideToUtf8(input);
-}
-#endif  // _WIN32
-
 absl::string_view Util::Utf8SubString(absl::string_view src, size_t start) {
   const char *begin = src.data();
   const char *end = begin + src.size();
   for (size_t i = 0; i < start && begin < end; ++i) {
-    begin += OneCharLen(begin);
+    begin += strings::OneCharLen(begin);
   }
   const size_t prefix_len = begin - src.data();
   return absl::string_view(begin, src.size() - prefix_len);
@@ -626,7 +600,7 @@ absl::string_view Util::Utf8SubString(absl::string_view src, size_t start,
   const char *substr_end = src.data();
   const char *const end = src.data() + src.size();
   while (l > 0 && substr_end < end) {
-    substr_end += OneCharLen(substr_end);
+    substr_end += strings::OneCharLen(substr_end);
     --l;
   }
   return absl::string_view(src.data(), substr_end - src.data());
@@ -639,9 +613,9 @@ void Util::Utf8SubString(absl::string_view src, size_t start, size_t length,
   result->assign(substr.data(), substr.size());
 }
 
-void Util::StripUtf8Bom(std::string *line) {
+absl::string_view Util::StripUtf8Bom(absl::string_view line) {
   static constexpr char kUtf8Bom[] = "\xef\xbb\xbf";
-  *line = std::string(absl::StripPrefix(*line, kUtf8Bom));
+  return absl::StripPrefix(line, kUtf8Bom);
 }
 
 bool Util::IsUtf16Bom(absl::string_view line) {
@@ -837,27 +811,29 @@ bool Util::IsEnglishTransliteration(absl::string_view value) {
 // script type
 // TODO(yukawa, team): Make a mechanism to keep this classifier up-to-date
 //   based on the original data from Unicode.org.
-Util::ScriptType Util::GetScriptType(char32_t w) {
-  if (INRANGE(w, 0x0030, 0x0039) ||  // ascii number
-      INRANGE(w, 0xFF10, 0xFF19)) {  // full width number
+Util::ScriptType Util::GetScriptType(char32_t codepoint) {
+  if (INRANGE(codepoint, 0x0030, 0x0039) ||  // ascii number
+      INRANGE(codepoint, 0xFF10, 0xFF19)) {  // full width number
     return NUMBER;
-  } else if (INRANGE(w, 0x0041, 0x005A) ||  // ascii upper
-             INRANGE(w, 0x0061, 0x007A) ||  // ascii lower
-             INRANGE(w, 0xFF21, 0xFF3A) ||  // fullwidth ascii upper
-             INRANGE(w, 0xFF41, 0xFF5A)) {  // fullwidth ascii lower
+  } else if (INRANGE(codepoint, 0x0041, 0x005A) ||  // ascii upper
+             INRANGE(codepoint, 0x0061, 0x007A) ||  // ascii lower
+             INRANGE(codepoint, 0xFF21, 0xFF3A) ||  // fullwidth ascii upper
+             INRANGE(codepoint, 0xFF41, 0xFF5A)) {  // fullwidth ascii lower
     return ALPHABET;
-  } else if (w == 0x3005 ||  // IDEOGRAPHIC ITERATION MARK "々"
-             INRANGE(w, 0x3400,
+  } else if (codepoint == 0x3005 ||  // IDEOGRAPHIC ITERATION MARK "々"
+             INRANGE(codepoint, 0x3400,
                      0x4DBF) ||  // CJK Unified Ideographs Extension A
-             INRANGE(w, 0x4E00, 0x9FFF) ||  // CJK Unified Ideographs
-             INRANGE(w, 0xF900, 0xFAFF) ||  // CJK Compatibility Ideographs
-             INRANGE(w, 0x20000,
+             INRANGE(codepoint, 0x4E00, 0x9FFF) ||  // CJK Unified Ideographs
+             INRANGE(codepoint, 0xF900,
+                     0xFAFF) ||  // CJK Compatibility Ideographs
+             INRANGE(codepoint, 0x20000,
                      0x2A6DF) ||  // CJK Unified Ideographs Extension B
-             INRANGE(w, 0x2A700,
+             INRANGE(codepoint, 0x2A700,
                      0x2B73F) ||  // CJK Unified Ideographs Extension C
-             INRANGE(w, 0x2B740,
+             INRANGE(codepoint, 0x2B740,
                      0x2B81F) ||  // CJK Unified Ideographs Extension D
-             INRANGE(w, 0x2F800, 0x2FA1F)) {  // CJK Compatibility Ideographs
+             INRANGE(codepoint, 0x2F800,
+                     0x2FA1F)) {  // CJK Compatibility Ideographs
     // As of Unicode 6.0.2, each block has the following characters assigned.
     // [U+3400, U+4DB5]:   CJK Unified Ideographs Extension A
     // [U+4E00, U+9FCB]:   CJK Unified Ideographs
@@ -867,51 +843,53 @@ Util::ScriptType Util::GetScriptType(char32_t w) {
     // [U+2B740, U+2B81D]: CJK Unified Ideographs Extension D
     // [U+2F800, U+2FA1D]: CJK Compatibility Ideographs
     return KANJI;
-  } else if (INRANGE(w, 0x3041, 0x309F) ||  // hiragana
-             w == 0x1B001) {                // HIRAGANA LETTER ARCHAIC YE
+  } else if (INRANGE(codepoint, 0x3041, 0x309F) ||  // hiragana
+             codepoint == 0x1B001) {  // HIRAGANA LETTER ARCHAIC YE
     return HIRAGANA;
-  } else if (INRANGE(w, 0x30A1, 0x30FF) ||  // full width katakana
-             INRANGE(w, 0x31F0,
+  } else if (INRANGE(codepoint, 0x30A1, 0x30FF) ||  // full width katakana
+             INRANGE(codepoint, 0x31F0,
                      0x31FF) ||  // Katakana Phonetic Extensions for Ainu
-             INRANGE(w, 0xFF65, 0xFF9F) ||  // half width katakana
-             w == 0x1B000) {                // KATAKANA LETTER ARCHAIC E
+             INRANGE(codepoint, 0xFF65, 0xFF9F) ||  // half width katakana
+             codepoint == 0x1B000) {                // KATAKANA LETTER ARCHAIC E
     return KATAKANA;
-  } else if (INRANGE(w, 0x02300, 0x023F3) ||  // Miscellaneous Technical
-             INRANGE(w, 0x02700, 0x027BF) ||  // Dingbats
-             INRANGE(w, 0x1F000, 0x1F02F) ||  // Mahjong tiles
-             INRANGE(w, 0x1F030, 0x1F09F) ||  // Domino tiles
-             INRANGE(w, 0x1F0A0, 0x1F0FF) ||  // Playing cards
-             INRANGE(w, 0x1F100,
+  } else if (INRANGE(codepoint, 0x02300, 0x023F3) ||  // Miscellaneous Technical
+             INRANGE(codepoint, 0x02700, 0x027BF) ||  // Dingbats
+             INRANGE(codepoint, 0x1F000, 0x1F02F) ||  // Mahjong tiles
+             INRANGE(codepoint, 0x1F030, 0x1F09F) ||  // Domino tiles
+             INRANGE(codepoint, 0x1F0A0, 0x1F0FF) ||  // Playing cards
+             INRANGE(codepoint, 0x1F100,
                      0x1F2FF) ||  // Enclosed Alphanumeric Supplement
-             INRANGE(w, 0x1F200, 0x1F2FF) ||  // Enclosed Ideographic Supplement
-             INRANGE(w, 0x1F300,
+             INRANGE(codepoint, 0x1F200,
+                     0x1F2FF) ||  // Enclosed Ideographic Supplement
+             INRANGE(codepoint, 0x1F300,
                      0x1F5FF) ||  // Miscellaneous Symbols And Pictographs
-             INRANGE(w, 0x1F600, 0x1F64F) ||  // Emoticons
-             INRANGE(w, 0x1F680, 0x1F6FF) ||  // Transport And Map Symbols
-             INRANGE(w, 0x1F700, 0x1F77F) ||  // Alchemical Symbols
-             w == 0x26CE) {                   // Ophiuchus
+             INRANGE(codepoint, 0x1F600, 0x1F64F) ||  // Emoticons
+             INRANGE(codepoint, 0x1F680,
+                     0x1F6FF) ||  // Transport And Map Symbols
+             INRANGE(codepoint, 0x1F700, 0x1F77F) ||  // Alchemical Symbols
+             codepoint == 0x26CE) {                   // Ophiuchus
     return EMOJI;
   }
 
   return UNKNOWN_SCRIPT;
 }
 
-Util::FormType Util::GetFormType(char32_t w) {
+Util::FormType Util::GetFormType(char32_t codepoint) {
   // 'Unicode Standard Annex #11: EAST ASIAN WIDTH'
   // http://www.unicode.org/reports/tr11/
 
   // Characters marked as 'Na' in
   // http://www.unicode.org/Public/UNIDATA/EastAsianWidth.txt
-  if (INRANGE(w, 0x0020, 0x007F) ||  // ascii
-      INRANGE(w, 0x27E6, 0x27ED) ||  // narrow mathematical symbols
-      INRANGE(w, 0x2985, 0x2986)) {  // narrow white parentheses
+  if (INRANGE(codepoint, 0x0020, 0x007F) ||  // ascii
+      INRANGE(codepoint, 0x27E6, 0x27ED) ||  // narrow mathematical symbols
+      INRANGE(codepoint, 0x2985, 0x2986)) {  // narrow white parentheses
     return HALF_WIDTH;
   }
 
   // Other characters marked as 'Na' in
   // http://www.unicode.org/Public/UNIDATA/EastAsianWidth.txt
-  if (INRANGE(w, 0x00A2, 0x00AF)) {
-    switch (w) {
+  if (INRANGE(codepoint, 0x00A2, 0x00AF)) {
+    switch (codepoint) {
       case 0x00A2:  // CENT SIGN
       case 0x00A3:  // POUND SIGN
       case 0x00A5:  // YEN SIGN
@@ -924,13 +902,13 @@ Util::FormType Util::GetFormType(char32_t w) {
 
   // Characters marked as 'H' in
   // http://www.unicode.org/Public/UNIDATA/EastAsianWidth.txt
-  if (w == 0x20A9 ||                 // WON SIGN
-      INRANGE(w, 0xFF61, 0xFF9F) ||  // half-width katakana
-      INRANGE(w, 0xFFA0, 0xFFBE) ||  // half-width hangul
-      INRANGE(w, 0xFFC2, 0xFFCF) ||  // half-width hangul
-      INRANGE(w, 0xFFD2, 0xFFD7) ||  // half-width hangul
-      INRANGE(w, 0xFFDA, 0xFFDC) ||  // half-width hangul
-      INRANGE(w, 0xFFE8, 0xFFEE)) {  // half-width symbols
+  if (codepoint == 0x20A9 ||                 // WON SIGN
+      INRANGE(codepoint, 0xFF61, 0xFF9F) ||  // half-width katakana
+      INRANGE(codepoint, 0xFFA0, 0xFFBE) ||  // half-width hangul
+      INRANGE(codepoint, 0xFFC2, 0xFFCF) ||  // half-width hangul
+      INRANGE(codepoint, 0xFFD2, 0xFFD7) ||  // half-width hangul
+      INRANGE(codepoint, 0xFFDA, 0xFFDC) ||  // half-width hangul
+      INRANGE(codepoint, 0xFFE8, 0xFFEE)) {  // half-width symbols
     return HALF_WIDTH;
   }
 
@@ -939,68 +917,74 @@ Util::FormType Util::GetFormType(char32_t w) {
 
 #undef INRANGE
 
-// return script type of first character in str
-Util::ScriptType Util::GetScriptType(const char *begin, const char *end,
-                                     size_t *mblen) {
-  const char32_t w = Utf8ToUcs4(begin, end, mblen);
-  return GetScriptType(w);
+// Returns the script type of the first character in `str`.
+Util::ScriptType Util::GetFirstScriptType(absl::string_view str,
+                                          size_t *mblen) {
+  if (str.empty()) {
+    if (mblen) {
+      *mblen = 0;
+    }
+    return GetScriptType(0);
+  }
+  const Utf8AsChars32 utf8_as_char32(str);
+  if (mblen) {
+    *mblen = utf8_as_char32.begin().ok() ? utf8_as_char32.begin().size() : 0;
+  }
+  return GetScriptType(utf8_as_char32.front());
 }
 
 namespace {
+using ScriptTypeBitSet = std::bitset<Util::SCRIPT_TYPE_SIZE>;
+constexpr ScriptTypeBitSet kNumBs(1 << Util::NUMBER);
+constexpr ScriptTypeBitSet kKanaBs((1 << Util::HIRAGANA) |
+                                   (1 << Util::KATAKANA));
 
 Util::ScriptType GetScriptTypeInternal(absl::string_view str,
                                        bool ignore_symbols) {
-  Util::ScriptType result = Util::SCRIPT_TYPE_SIZE;
+  ScriptTypeBitSet bs(-1);
+  DCHECK(bs.all());
 
-  for (ConstChar32Iterator iter(str); !iter.Done(); iter.Next()) {
-    const char32_t w = iter.Get();
-    Util::ScriptType type = Util::GetScriptType(w);
-    if ((w == 0x30FC || w == 0x30FB || (w >= 0x3099 && w <= 0x309C)) &&
-        // PROLONGEDSOUND MARK|MIDLE_DOT|VOICED_SOUND_MARKS
-        // are HIRAGANA as well
-        (result == Util::SCRIPT_TYPE_SIZE || result == Util::HIRAGANA ||
-         result == Util::KATAKANA)) {
-      type = result;  // restore the previous state
-    }
-
-    // Ignore symbols
-    // Regard UNKNOWN_SCRIPT as symbols here
-    if (ignore_symbols && result != Util::UNKNOWN_SCRIPT &&
-        type == Util::UNKNOWN_SCRIPT) {
-      continue;
-    }
-
-    // Periods are NUMBER as well, if it is not the first character.
-    // 0xFF0E == '．', 0x002E == '.' in UCS4 encoding.
-    if (result == Util::NUMBER && (w == 0xFF0E || w == 0x002E)) {
-      continue;
-    }
-
-    // Not first character.
-    // Note: GetScriptType doesn't return SCRIPT_TYPE_SIZE, thus if result
-    // is not SCRIPT_TYPE_SIZE, it is not the first character.
-    if (result != Util::SCRIPT_TYPE_SIZE && type != result) {
+  for (const char32_t codepoint : Utf8AsChars32(str)) {
+    if (bs.count() == 0) {
       return Util::UNKNOWN_SCRIPT;
     }
-    result = type;
+
+    // PROLONGED SOUND MARK|MIDLE_DOT|VOICED_SOUND_MARKS
+    // are HIRAGANA or KATAKANA as well.
+    if (codepoint == U'ー' || codepoint == U'・' ||
+        (codepoint >= 0x3099 && codepoint <= 0x309C)) {
+      bs &= kKanaBs;
+      continue;
+    }
+
+    // Periods ('．' U+FF0E and '.' U+002E) are NUMBER as well, if they are not
+    // the first character.
+    if ((codepoint == U'．' || codepoint == U'.') && bs == kNumBs) {
+      continue;
+    }
+
+    Util::ScriptType type = Util::GetScriptType(codepoint);
+    // Ignore symbols
+    // Regard UNKNOWN_SCRIPT as symbols here
+    if (ignore_symbols && type == Util::UNKNOWN_SCRIPT) {
+      continue;
+    }
+
+    ScriptTypeBitSet type_bs(1 << type);
+    bs &= type_bs;
   }
 
-  if (result == Util::SCRIPT_TYPE_SIZE) {  // everything is "ー"
+  if (bs.count() != 1) {
     return Util::UNKNOWN_SCRIPT;
   }
 
-  return result;
+  const uint32_t onehot = static_cast<uint32_t>(bs.to_ulong());
+  return static_cast<Util::ScriptType>(absl::countr_zero(onehot));
 }
-
 }  // namespace
 
 Util::ScriptType Util::GetScriptType(absl::string_view str) {
   return GetScriptTypeInternal(str, false);
-}
-
-Util::ScriptType Util::GetFirstScriptType(absl::string_view str) {
-  size_t mblen = 0;
-  return GetScriptType(str.data(), str.data() + str.size(), &mblen);
 }
 
 Util::ScriptType Util::GetScriptTypeWithoutSymbols(absl::string_view str) {
@@ -1010,9 +994,10 @@ Util::ScriptType Util::GetScriptTypeWithoutSymbols(absl::string_view str) {
 // return true if all script_type in str is "type"
 bool Util::IsScriptType(absl::string_view str, Util::ScriptType type) {
   for (ConstChar32Iterator iter(str); !iter.Done(); iter.Next()) {
-    const char32_t w = iter.Get();
+    const char32_t codepoint = iter.Get();
     // Exception: 30FC (PROLONGEDSOUND MARK is categorized as HIRAGANA as well)
-    if (type != GetScriptType(w) && (w != 0x30FC || type != HIRAGANA)) {
+    if (type != GetScriptType(codepoint) &&
+        (codepoint != 0x30FC || type != HIRAGANA)) {
       return false;
     }
   }
@@ -1054,17 +1039,17 @@ namespace {
 // constexpr uint64_t kJisX0208BitmapIndex
 #include "base/character_set.inc"
 
-bool IsJisX0208Char(char32_t ucs4) {
-  if (ucs4 <= 0x7F) {
+bool IsJisX0208Char(char32_t codepoint) {
+  if (codepoint <= 0x7F) {
     return true;  // ASCII
   }
 
-  if ((65377 <= ucs4 && ucs4 <= 65439)) {
+  if ((65377 <= codepoint && codepoint <= 65439)) {
     return true;  // JISX0201
   }
 
-  if (ucs4 < 65536) {
-    const int index = ucs4 / 1024;
+  if (codepoint < 65536) {
+    const int index = codepoint / 1024;
     if ((kJisX0208BitmapIndex & (static_cast<uint64_t>(1) << index)) == 0) {
       return false;
     }
@@ -1072,7 +1057,7 @@ bool IsJisX0208Char(char32_t ucs4) {
     const int bitmap_index =
         absl::popcount(kJisX0208BitmapIndex << (63 - index)) - 1;
     const uint32_t *bitmap = kJisX0208Bitmap[bitmap_index];
-    if ((bitmap[(ucs4 % 1024) / 32] >> (ucs4 % 32)) & 0b1) {
+    if ((bitmap[(codepoint % 1024) / 32] >> (codepoint % 32)) & 0b1) {
       return true;  // JISX0208
     }
     return false;

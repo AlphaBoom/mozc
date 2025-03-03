@@ -45,16 +45,18 @@
 #include "base/container/freelist.h"
 #include "base/container/trie.h"
 #include "base/thread.h"
+#include "composer/query.h"
 #include "converter/segments.h"
 #include "dictionary/dictionary_interface.h"
 #include "dictionary/pos_matcher.h"
 #include "dictionary/suppression_dictionary.h"
+#include "engine/modules.h"
 #include "prediction/predictor_interface.h"
 #include "prediction/user_history_predictor.pb.h"
 #include "request/conversion_request.h"
 #include "storage/encrypted_string_storage.h"
 #include "storage/lru_cache.h"
-#include "testing/gunit_prod.h"  // IWYU pragma: keep
+#include "testing/friend_test.h"  // IWYU pragma: keep
 
 namespace mozc::prediction {
 
@@ -95,11 +97,8 @@ class UserHistoryStorage {
 // called by multiple-threads at the same time
 class UserHistoryPredictor : public PredictorInterface {
  public:
-  UserHistoryPredictor(
-      const dictionary::DictionaryInterface *dictionary,
-      const dictionary::PosMatcher *pos_matcher,
-      const dictionary::SuppressionDictionary *suppression_dictionary,
-      bool enable_content_word_learning);
+  UserHistoryPredictor(const engine::Modules &modules,
+                       bool enable_content_word_learning);
   ~UserHistoryPredictor() override;
 
   void set_content_word_learning_enabled(bool value) {
@@ -145,9 +144,9 @@ class UserHistoryPredictor : public PredictorInterface {
   }
 
   // From user_history_predictor.proto
-  typedef user_history_predictor::UserHistory::Entry Entry;
-  typedef user_history_predictor::UserHistory::NextEntry NextEntry;
-  typedef user_history_predictor::UserHistory::Entry::EntryType EntryType;
+  using Entry = user_history_predictor::UserHistory::Entry;
+  using NextEntry = user_history_predictor::UserHistory::NextEntry;
+  using EntryType = user_history_predictor::UserHistory::Entry::EntryType;
 
   // Returns fingerprints from various object.
   static uint32_t Fingerprint(absl::string_view key, absl::string_view value);
@@ -160,7 +159,7 @@ class UserHistoryPredictor : public PredictorInterface {
   static uint32_t cache_size();
 
   // Returns the size of next entries.
-  static uint32_t max_next_entries_size();
+  uint32_t max_next_entries_size() const;
 
  private:
   struct SegmentForLearning {
@@ -170,7 +169,13 @@ class UserHistoryPredictor : public PredictorInterface {
     std::string content_value;
     std::string description;
   };
+
+  // Fingerprint of key/value.
   static uint32_t LearningSegmentFingerprint(const SegmentForLearning &segment);
+
+  // Fingerprints of key/value and content_key/content_value.
+  std::vector<uint32_t> LearningSegmentFingerprints(
+      const SegmentForLearning &segment) const;
 
   struct SegmentsForLearning {
     std::string conversion_segments_key;
@@ -188,6 +193,7 @@ class UserHistoryPredictor : public PredictorInterface {
   FRIEND_TEST(UserHistoryPredictorTest, GetScore);
   FRIEND_TEST(UserHistoryPredictorTest, IsValidEntry);
   FRIEND_TEST(UserHistoryPredictorTest, IsValidSuggestion);
+  FRIEND_TEST(UserHistoryPredictorTest, IsValidSuggestionForMixedConversion);
   FRIEND_TEST(UserHistoryPredictorTest, EntryPriorityQueueTest);
   FRIEND_TEST(UserHistoryPredictorTest, RomanFuzzyPrefixMatch);
   FRIEND_TEST(UserHistoryPredictorTest, MaybeRomanMisspelledKey);
@@ -241,6 +247,13 @@ class UserHistoryPredictor : public PredictorInterface {
     NOT_FOUND,
   };
 
+  // Result type for IsValidCandidate() check.
+  enum ResultType {
+    GOOD_RESULT,
+    BAD_RESULT,
+    STOP_ENUMERATION,  // Do not insert and stop enumerations
+  };
+
   // Returns true if this predictor should return results for the input.
   bool ShouldPredict(RequestType request_type, const ConversionRequest &request,
                      const Segments &segments) const;
@@ -287,6 +300,16 @@ class UserHistoryPredictor : public PredictorInterface {
   static bool IsValidSuggestion(RequestType request_type, uint32_t prefix_len,
                                 const Entry &entry);
 
+  // IsValidSuggestion used in mixed conversion (mobile).
+  static bool IsValidSuggestionForMixedConversion(
+      const ConversionRequest &request, uint32_t prefix_len,
+      const Entry &entry);
+
+  static ResultType GetResultType(const ConversionRequest &request,
+                                  RequestType request_type,
+                                  bool is_top_candidate, uint32_t input_key_len,
+                                  const Entry &entry);
+
   // Returns true if entry is DEFAULT_ENTRY, satisfies certain conditions, and
   // doesn't have removed flag.
   bool IsValidEntry(const Entry &entry) const;
@@ -312,8 +335,8 @@ class UserHistoryPredictor : public PredictorInterface {
     Entry *NewEntry();
 
    private:
-    typedef std::pair<uint32_t, Entry *> QueueElement;
-    typedef std::priority_queue<QueueElement> Agenda;
+    using QueueElement = std::pair<uint32_t, Entry *>;
+    using Agenda = std::priority_queue<QueueElement>;
 
     friend class UserHistoryPredictor;
 
@@ -324,8 +347,8 @@ class UserHistoryPredictor : public PredictorInterface {
     absl::flat_hash_set<size_t> seen_;
   };
 
-  typedef mozc::storage::LruCache<uint32_t, Entry> DicCache;
-  typedef DicCache::Element DicElement;
+  using DicCache = mozc::storage::LruCache<uint32_t, Entry>;
+  using DicElement = DicCache::Element;
 
   bool CheckSyncerAndDelete() const;
 
@@ -380,11 +403,11 @@ class UserHistoryPredictor : public PredictorInterface {
 
   bool InsertCandidates(RequestType request_type,
                         const ConversionRequest &request,
-                        size_t max_prediction_size, Segments *segments,
+                        size_t max_prediction_size,
+                        size_t max_prediction_char_coverage, Segments *segments,
                         EntryPriorityQueue *results) const;
 
-  void MakeLearningSegments(const Segments &segments,
-                            SegmentsForLearning *learning_segments) const;
+  SegmentsForLearning MakeLearningSegments(const Segments &segments) const;
 
   // Returns true if |prefix| is a fuzzy-prefix of |str|.
   // 'Fuzzy' means that
@@ -401,6 +424,10 @@ class UserHistoryPredictor : public PredictorInterface {
   static std::string GetRomanMisspelledKey(const ConversionRequest &request,
                                            const Segments &segments);
 
+  // Returns the typing corrected queries.
+  std::vector<::mozc::composer::TypeCorrectedQuery> GetTypingCorrectedQueries(
+      const ConversionRequest &request, const Segments &segments) const;
+
   // Returns true if |key| may contain miss spelling.
   // Currently, this function returns true if
   // 1) key contains only one alphabet.
@@ -415,6 +442,13 @@ class UserHistoryPredictor : public PredictorInterface {
                              const Entry *entry,
                              EntryPriorityQueue *results) const;
 
+  // if `prev_entry` is the prefix of `entry`, add the suffix part as
+  // zero-query suggestion.
+  bool ZeroQueryLookupEntry(RequestType request_type,
+                            absl::string_view input_key, const Entry *entry,
+                            const Entry *prev_entry,
+                            EntryPriorityQueue *results) const;
+
   void InsertHistory(RequestType request_type, bool is_suggestion_selected,
                      uint64_t last_access_time, Segments *segments);
 
@@ -425,10 +459,10 @@ class UserHistoryPredictor : public PredictorInterface {
 
   // Inserts |key,value,description| to the internal dictionary database.
   // |is_suggestion_selected|: key/value is suggestion or conversion.
-  // |next_fp|: fingerprint of the next segment.
+  // |next_fp|: fingerprints of the next segment.
   // |last_access_time|: the time when this entry was created
   void Insert(std::string key, std::string value, std::string description,
-              bool is_suggestion_selected, uint32_t next_fp,
+              bool is_suggestion_selected, absl::Span<const uint32_t> next_fps,
               uint64_t last_access_time, Segments *segments);
 
   // Called by TryInsert to check the Entry to insert.
@@ -440,8 +474,9 @@ class UserHistoryPredictor : public PredictorInterface {
   // Entry's contents and request_type will be checked before insertion.
   void TryInsert(RequestType request_type, absl::string_view key,
                  absl::string_view value, absl::string_view description,
-                 bool is_suggestion_selected, uint32_t next_fp,
-                 uint64_t last_access_time, Segments *segments);
+                 bool is_suggestion_selected,
+                 absl::Span<const uint32_t> next_fps, uint64_t last_access_time,
+                 Segments *segments);
 
   // Inserts event entry (CLEAN_ALL_EVENT|CLEAN_UNUSED_EVENT).
   void InsertEvent(EntryType type);
@@ -464,7 +499,10 @@ class UserHistoryPredictor : public PredictorInterface {
   // such like password.
   bool IsPrivacySensitive(const Segments *segments) const;
 
-  void MaybeRecordUsageStats(const Segments &segments) const;
+  // Removes history entries when the selected ratio is under the threshold.
+  // Selected ratio:
+  //  (# of candidate committed) / (# of candidate shown on commit event)
+  void MaybeRemoveUnselectedHistory(const Segments &segments);
 
   const dictionary::DictionaryInterface *dictionary_;
   const dictionary::PosMatcher *pos_matcher_;
@@ -475,6 +513,9 @@ class UserHistoryPredictor : public PredictorInterface {
   mutable std::atomic<bool> updated_;
   std::unique_ptr<DicCache> dic_;
   mutable std::optional<BackgroundFuture<void>> sync_;
+  const engine::Modules &modules_;
+
+  mutable std::atomic<bool> aggressive_bigram_enabled_ = false;
 };
 
 }  // namespace mozc::prediction

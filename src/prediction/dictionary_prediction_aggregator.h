@@ -38,14 +38,13 @@
 #include <vector>
 
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "base/util.h"
 #include "converter/converter_interface.h"
 #include "converter/immutable_converter_interface.h"
 #include "converter/segments.h"
-#include "data_manager/data_manager_interface.h"
 #include "dictionary/dictionary_interface.h"
 #include "dictionary/dictionary_token.h"
-#include "dictionary/pos_matcher.h"
 #include "engine/modules.h"
 #include "prediction/number_decoder.h"
 #include "prediction/prediction_aggregator_interface.h"
@@ -65,18 +64,8 @@ class DictionaryPredictionAggregator : public PredictionAggregatorInterface {
   ~DictionaryPredictionAggregator() override = default;
 
   DictionaryPredictionAggregator(
-      const DataManagerInterface &data_manager,
-      const ConverterInterface *converter,
-      const ImmutableConverterInterface *immutable_converter,
-      const engine::Modules &modules);
-
-  DictionaryPredictionAggregator(
-      const DataManagerInterface &data_manager,
-      const ConverterInterface *converter,
-      const ImmutableConverterInterface *immutable_converter,
-      const dictionary::DictionaryInterface *dictionary,
-      const dictionary::DictionaryInterface *suffix_dictionary,
-      const dictionary::PosMatcher *pos_matcher);
+      const engine::Modules &modules, const ConverterInterface &converter,
+      const ImmutableConverterInterface &immutable_converter);
 
   std::vector<Result> AggregateResults(const ConversionRequest &request,
                                        const Segments &segments) const override;
@@ -110,17 +99,6 @@ class DictionaryPredictionAggregator : public PredictionAggregatorInterface {
     std::vector<std::string> constraints;
   };
 
-  // For testing
-  DictionaryPredictionAggregator(
-      const DataManagerInterface &data_manager,
-      const ConverterInterface *converter,
-      const ImmutableConverterInterface *immutable_converter,
-      const dictionary::DictionaryInterface *dictionary,
-      const dictionary::DictionaryInterface *suffix_dictionary,
-      const dictionary::PosMatcher *pos_matcher,
-      std::unique_ptr<PredictionAggregatorInterface>
-          single_kanji_prediction_aggregator);
-
   // Returns the bitfield that indicates what prediction subroutines
   // were used.  NO_PREDICTION means that no prediction was made.
   PredictionTypes AggregatePredictionForTesting(
@@ -141,8 +119,8 @@ class DictionaryPredictionAggregator : public PredictionAggregatorInterface {
       const ZeroQueryDict &dict, std::vector<ZeroQueryResult> *results);
 
   static void AppendZeroQueryToResults(
-      const std::vector<ZeroQueryResult> &candidates, uint16_t lid,
-      uint16_t rid, std::vector<Result> *results);
+      absl::Span<const ZeroQueryResult> candidates, uint16_t lid, uint16_t rid,
+      std::vector<Result> *results);
 
   PredictionTypes AggregatePredictionForZeroQuery(
       const ConversionRequest &request, const Segments &segments,
@@ -227,10 +205,10 @@ class DictionaryPredictionAggregator : public PredictionAggregatorInterface {
 
   // Aggregate* methods aggregate the candidates with different resources
   // and algorithms.
-  void AggregateRealtimeConversion(const ConversionRequest &request,
-                                   size_t realtime_candidates_size,
-                                   const Segments &segments,
-                                   std::vector<Result> *results) const;
+  void AggregateRealtimeConversion(
+      const ConversionRequest &request, size_t realtime_candidates_size,
+      bool insert_realtime_top_from_actual_converter, const Segments &segments,
+      std::vector<Result> *results) const;
 
   void AggregateBigramPrediction(const ConversionRequest &request,
                                  const Segments &segments,
@@ -257,6 +235,9 @@ class DictionaryPredictionAggregator : public PredictionAggregatorInterface {
                                  const Segments &segments,
                                  std::vector<Result> *results) const;
 
+  bool AggregateNumberCandidates(absl::string_view input_key,
+                                 std::vector<Result> *results) const;
+
   // Note that this look up is done with raw input string rather than query
   // string from composer.  This is helpful to implement language aware input.
   void AggregateEnglishPredictionUsingRawInput(
@@ -280,9 +261,11 @@ class DictionaryPredictionAggregator : public PredictionAggregatorInterface {
       const ConversionRequest &request, const Segments &segments,
       std::vector<Result> *results) const;
 
-  // Generates `HandwritingQueryInfo` using composer in the `request`.
+  // Generates `HandwritingQueryInfo` for the given composition event.
   std::optional<HandwritingQueryInfo> GenerateQueryForHandwriting(
-      const ConversionRequest &request, const Segments &segments) const;
+      const ConversionRequest &request,
+      const commands::SessionCommand::CompositionEvent &composition_event)
+      const;
 
   // Generates prediction candidates using composition events in composer and
   // appends to `results`.
@@ -295,11 +278,16 @@ class DictionaryPredictionAggregator : public PredictionAggregatorInterface {
       const ConversionRequest &request, const Segments &segments,
       int zip_code_id, int unknown_id, std::vector<Result> *results);
 
+  void MaybePopulateTypingCorrectionPenalty(const ConversionRequest &request,
+                                            const Segments &segments,
+                                            std::vector<Result> *results) const;
+
   // Test peer to access private methods
   friend class DictionaryPredictionAggregatorTestPeer;
 
-  const ConverterInterface *converter_;
-  const ImmutableConverterInterface *immutable_converter_;
+  const engine::Modules &modules_;
+  const ConverterInterface &converter_;
+  const ImmutableConverterInterface &immutable_converter_;
   const dictionary::DictionaryInterface *dictionary_;
   const dictionary::DictionaryInterface *suffix_dictionary_;
   const uint16_t counter_suffix_word_id_;
@@ -307,8 +295,8 @@ class DictionaryPredictionAggregator : public PredictionAggregatorInterface {
   const uint16_t zip_code_id_;
   const uint16_t number_id_;
   const uint16_t unknown_id_;
-  ZeroQueryDict zero_query_dict_;
-  ZeroQueryDict zero_query_number_dict_;
+  const ZeroQueryDict &zero_query_dict_;
+  const ZeroQueryDict &zero_query_number_dict_;
   NumberDecoder number_decoder_;
   std::unique_ptr<PredictionAggregatorInterface>
       single_kanji_prediction_aggregator_;

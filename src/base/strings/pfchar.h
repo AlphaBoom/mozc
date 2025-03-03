@@ -30,6 +30,7 @@
 #ifndef MOZC_BASE_STRINGS_PFCHAR_H_
 #define MOZC_BASE_STRINGS_PFCHAR_H_
 
+#include <cstddef>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -74,7 +75,7 @@ template <
     typename T = pfstring,
     std::enable_if_t<std::is_same_v<T, std::string>, std::nullptr_t> = nullptr>
 inline const pfstring &to_pfstring(const std::string &str) {
-  return str;
+  return static_cast<const T &>(str);
 }
 
 inline pfstring to_pfstring(const absl::string_view str) {
@@ -101,7 +102,7 @@ inline std::string to_string(pfstring &&str) {
 template <
     typename T = pfstring,
     std::enable_if_t<std::is_same_v<T, std::string>, std::nullptr_t> = nullptr>
-inline const std::string &to_string(const pfstring &str) {
+inline const std::string &to_string(const T &str) {
   return str;
 }
 

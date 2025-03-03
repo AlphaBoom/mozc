@@ -29,14 +29,17 @@
 
 #include "converter/quality_regression_util.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <memory>
 #include <sstream>  // NOLINT
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
@@ -44,8 +47,8 @@
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "base/file_stream.h"
-#include "base/logging.h"
 #include "base/number_util.h"
 #include "base/text_normalizer.h"
 #include "base/util.h"
@@ -182,7 +185,8 @@ absl::Status QualityRegressionUtil::TestItem::ParseFromTSV(
   return absl::OkStatus();
 }
 
-QualityRegressionUtil::QualityRegressionUtil(ConverterInterface *converter)
+QualityRegressionUtil::QualityRegressionUtil(
+    std::shared_ptr<const ConverterInterface> converter)
     : converter_(converter) {}
 
 namespace {
@@ -219,7 +223,7 @@ absl::Status QualityRegressionUtil::ParseFile(const std::string &filename,
 
 // static
 absl::Status QualityRegressionUtil::ParseFiles(
-    const std::vector<std::string> &filenames, std::vector<TestItem> *outputs) {
+    absl::Span<const std::string> filenames, std::vector<TestItem> *outputs) {
   outputs->clear();
   for (const std::string &filename : filenames) {
     const absl::Status result = ParseFileInternal(filename, outputs);
@@ -242,14 +246,17 @@ absl::StatusOr<bool> QualityRegressionUtil::ConvertAndTest(
   converter_->ResetConversion(&segments_);
   actual_value->clear();
 
-  composer::Table table;
+  auto table = std::make_shared<composer::Table>();
+  config_.set_use_typing_correction(true);
+  commands::Context context;
 
   if (command == kConversionExpect || command == kConversionNotExpect ||
       command == kConversionMatch || command == kConversionNotMatch) {
-    composer::Composer composer(&table, &request_, &config_);
+    composer::Composer composer(table, request_, config_);
     composer.SetPreeditTextForTestOnly(key);
-    ConversionRequest conv_req(&composer, &request_, &config_);
-    if (!converter_->StartConversionForRequest(conv_req, &segments_)) {
+    const ConversionRequest conv_req(
+        composer, request_, commands::Context::default_instance(), config_, {});
+    if (!converter_->StartConversion(conv_req, &segments_)) {
       return absl::UnknownError(absl::StrCat(
           "StartConversionForRequest failed: ", item.OutputAsTSV()));
     }
@@ -259,33 +266,43 @@ absl::StatusOr<bool> QualityRegressionUtil::ConvertAndTest(
       return absl::UnknownError("StartReverseConversion failed");
     }
   } else if (command == kPredictionExpect || command == kPredictionNotExpect) {
-    composer::Composer composer(&table, &request_, &config_);
+    composer::Composer composer(table, request_, config_);
     composer.SetPreeditTextForTestOnly(key);
-    ConversionRequest conv_req(&composer, &request_, &config_);
-    if (!converter_->StartPredictionForRequest(conv_req, &segments_)) {
+    ConversionRequest::Options options;
+    options.request_type = ConversionRequest::PREDICTION;
+    if (request_.mixed_conversion()) {
+      options.create_partial_candidates = true;
+    }
+    const ConversionRequest conv_req(composer, request_, context, config_,
+                                     std::move(options));
+    if (!converter_->StartPrediction(conv_req, &segments_)) {
       return absl::UnknownError(absl::StrCat(
           "StartPredictionForRequest failed: ", item.OutputAsTSV()));
     }
   } else if (command == kSuggestionExpect || command == kSuggestionNotExpect) {
-    composer::Composer composer(&table, &request_, &config_);
+    composer::Composer composer(table, request_, config_);
     composer.SetPreeditTextForTestOnly(key);
-    ConversionRequest conv_req(&composer, &request_, &config_);
-    if (!converter_->StartSuggestionForRequest(conv_req, &segments_)) {
+    const ConversionRequest conv_req(
+        composer, request_, context, config_,
+        {.request_type = ConversionRequest::SUGGESTION});
+    if (!converter_->StartPrediction(conv_req, &segments_)) {
       return absl::UnknownError(absl::StrCat(
-          "StartSuggestionForRequest failed: ", item.OutputAsTSV()));
+          "StartPrediction for suggestion failed: ", item.OutputAsTSV()));
     }
   } else if (command == kZeroQueryExpect || command == kZeroQueryNotExpect) {
     commands::Request request = request_;
     request.set_zero_query_suggestion(true);
     request.set_mixed_conversion(true);
     {
-      composer::Composer composer(&table, &request, &config_);
+      composer::Composer composer(table, request, config_);
       composer.SetPreeditTextForTestOnly(key);
-      ConversionRequest conv_req(&composer, &request, &config_);
-      conv_req.set_max_conversion_candidates_size(10);
-      if (!converter_->StartSuggestionForRequest(conv_req, &segments_)) {
+      const ConversionRequest conv_req(
+          composer, request, context, config_,
+          {.request_type = ConversionRequest::SUGGESTION,
+           .max_conversion_candidates_size = 10});
+      if (!converter_->StartPrediction(conv_req, &segments_)) {
         return absl::UnknownError(absl::StrCat(
-            "StartSuggestionForRequest failed: ", item.OutputAsTSV()));
+            "StartSuggestion for suggestion failed: ", item.OutputAsTSV()));
       }
       if (!converter_->CommitSegmentValue(&segments_, 0, 0)) {
         return absl::UnknownError(
@@ -295,10 +312,12 @@ absl::StatusOr<bool> QualityRegressionUtil::ConvertAndTest(
     }
     {
       // Issues zero-query request.
-      composer::Composer composer(&table, &request, &config_);
-      ConversionRequest conv_req(&composer, &request, &config_);
-      conv_req.set_max_conversion_candidates_size(10);
-      if (!converter_->StartPredictionForRequest(conv_req, &segments_)) {
+      composer::Composer composer(table, request, config_);
+      const ConversionRequest conv_req(
+          composer, request, context, config_,
+          {.request_type = ConversionRequest::PREDICTION,
+           .max_conversion_candidates_size = 10});
+      if (!converter_->StartPrediction(conv_req, &segments_)) {
         return absl::UnknownError(absl::StrCat(
             "StartPredictionForRequest failed: ", item.OutputAsTSV()));
       }
@@ -317,8 +336,8 @@ absl::StatusOr<bool> QualityRegressionUtil::ConvertAndTest(
     return true;
   }
 
-  for (size_t i = 0; i < segments_.segments_size(); ++i) {
-    *actual_value += segments_.segment(i).candidate(0).value;
+  for (const Segment &segment : segments_) {
+    *actual_value += segment.candidate(0).value;
   }
 
   if (command == kConversionMatch) {

@@ -29,15 +29,15 @@
 
 # Mozc Windows renderer.
 
-load("//bazel:stubs.bzl", "lexan")
 load(
     "//:build_defs.bzl",
     "MOZC_TAGS",
     "mozc_cc_binary",
     "mozc_cc_library",
     "mozc_cc_test",
+    "mozc_win32_cc_prod_binary",
+    "mozc_win32_resource_from_template",
 )
-load("//bazel/win32:build_defs.bzl", "copts_wtl")
 
 package(
     default_visibility = ["//renderer:__pkg__"],
@@ -45,12 +45,18 @@ package(
     features = ["gdi"],
 )
 
-mozc_cc_binary(
+mozc_win32_cc_prod_binary(
     name = "win32_renderer_main",
     srcs = ["win32_renderer_main.cc"],
-    copts = copts_wtl(),
+    cpu = "@platforms//cpu:x86_64",
+    executable_name_map = {
+        "Mozc": "mozc_renderer.exe",
+        "GoogleJapaneseInput": "GoogleIMEJaRenderer.exe",
+    },
+    static_crt = False,
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
+    visibility = ["//win32/installer:__subpackages__"],  # Scheuklappen: keep
     deps = [
         ":win32_renderer_main_resources",
         ":win32_server",
@@ -60,13 +66,11 @@ mozc_cc_binary(
     ],
 )
 
-lexan.resource_files(
+mozc_win32_resource_from_template(
     name = "win32_renderer_main_resources",
+    src = "mozc_renderer.rc",
     manifests = [
         "mozc_renderer.exe.manifest",
-    ],
-    rc_files = [
-        "mozc_renderer.rc",
     ],
     resources = [
         "resource.h",
@@ -87,11 +91,11 @@ mozc_cc_binary(
     deps = [
         "//base:file_stream",
         "//base:init_mozc",
-        "//base:logging",
         "//base/win32:wide_char",
         "//bazel/win32:gdiplus",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
     ],
 )
 
@@ -99,7 +103,6 @@ mozc_cc_library(
     name = "candidate_window",
     srcs = ["candidate_window.cc"],
     hdrs = ["candidate_window.h"],
-    copts = copts_wtl(),
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
@@ -107,15 +110,19 @@ mozc_cc_library(
         ":text_renderer",
         "//base:const",
         "//base:coordinates",
-        "//base:logging",
-        "//base:util",
+        "//base/win32:wide_char",
+        "//bazel/win32:gdi32",
+        "//bazel/win32:msimg32",
+        "//bazel/win32:user32",
         "//client:client_interface",
-        "//protocol:candidates_cc_proto",
+        "//protocol:candidate_window_cc_proto",
         "//protocol:commands_cc_proto",
         "//protocol:renderer_cc_proto",
         "//renderer:renderer_style_handler",
         "//renderer:table_layout",
-        "//third_party/wtl",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_microsoft_wil//:wil",
     ],
 )
 
@@ -127,11 +134,11 @@ mozc_cc_library(
     target_compatible_with = ["@platforms//os:windows"],
     visibility = ["//win32/tip:__subpackages__"],
     deps = [
-        "//base:logging",
         "//base:system_util",
         "//protocol:renderer_cc_proto",
         "//renderer:renderer_client",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/synchronization",
         "@com_microsoft_wil//:wil",
     ],
@@ -141,19 +148,21 @@ mozc_cc_library(
     name = "indicator_window",
     srcs = ["indicator_window.cc"],
     hdrs = ["indicator_window.h"],
-    copts = copts_wtl(),
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
+        ":win32_font_util",
         ":win32_image_util",
         ":win32_renderer_util",
         "//base:const",
         "//base:coordinates",
-        "//base:logging",
-        "//base:util",
+        "//base/win32:wide_char",
+        "//bazel/win32:gdi32",
+        "//bazel/win32:user32",
         "//protocol:commands_cc_proto",
         "//protocol:renderer_cc_proto",
-        "//third_party/wtl",
+        "@com_google_absl//absl/log:check",
+        "@com_microsoft_wil//:wil",
     ],
 )
 
@@ -161,20 +170,17 @@ mozc_cc_library(
     name = "text_renderer",
     srcs = ["text_renderer.cc"],
     hdrs = ["text_renderer.h"],
-    copts = copts_wtl(),
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
-    visibility = [
-        "//visibility:private",  # Only private by automation, not intent. Owner may accept CLs adding visibility. See go/scheuklappen#explicit-private.
-    ],
+    visibility = ["//visibility:private"],
     deps = [
+        ":win32_font_util",
         "//base:coordinates",
-        "//base:logging",
         "//bazel/win32:d2d1",
         "//bazel/win32:dwrite",
         "//protocol:renderer_cc_proto",
         "//renderer:renderer_style_handler",
-        "//third_party/wtl",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/types:span",
         "@com_microsoft_wil//:wil",
     ],
@@ -184,18 +190,16 @@ mozc_cc_library(
     name = "win32_server",
     srcs = ["win32_server.cc"],
     hdrs = ["win32_server.h"],
-    copts = copts_wtl(),
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
         ":window_manager",
-        "//base:logging",
-        "//base:run_level",
-        "//base:util",
         "//base:vlog",
         "//protocol:renderer_cc_proto",
         "//renderer:renderer_interface",
         "//renderer:renderer_server",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
     ],
@@ -205,22 +209,22 @@ mozc_cc_library(
     name = "infolist_window",
     srcs = ["infolist_window.cc"],
     hdrs = ["infolist_window.h"],
-    copts = copts_wtl(),
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
         ":text_renderer",
         "//base:const",
         "//base:coordinates",
-        "//base:logging",
-        "//base:util",
         "//base:vlog",
+        "//base/win32:wide_char",
+        "//bazel/win32:gdi32",
+        "//bazel/win32:user32",
         "//client:client_interface",
-        "//protocol:candidates_cc_proto",
+        "//protocol:candidate_window_cc_proto",
         "//protocol:commands_cc_proto",
         "//protocol:renderer_cc_proto",
         "//renderer:renderer_style_handler",
-        "//third_party/wtl",
+        "@com_microsoft_wil//:wil",
     ],
 )
 
@@ -228,7 +232,6 @@ mozc_cc_library(
     name = "window_manager",
     srcs = ["window_manager.cc"],
     hdrs = ["window_manager.h"],
-    copts = copts_wtl(),
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
@@ -237,28 +240,38 @@ mozc_cc_library(
         ":infolist_window",
         ":win32_renderer_util",
         "//base:coordinates",
-        "//base:logging",
         "//client:client_interface",
-        "//protocol:candidates_cc_proto",
+        "//protocol:candidate_window_cc_proto",
         "//protocol:commands_cc_proto",
         "//protocol:renderer_cc_proto",
-        "//renderer:renderer_interface",
         "//renderer:window_util",
+        "@com_google_absl//absl/log:check",
     ],
+)
+
+mozc_cc_library(
+    name = "win32_font_util",
+    srcs = [],
+    hdrs = ["win32_font_util.h"],
+    tags = MOZC_TAGS.WIN_ONLY,
+    target_compatible_with = ["@platforms//os:windows"],
 )
 
 mozc_cc_library(
     name = "win32_image_util",
     srcs = ["win32_image_util.cc"],
     hdrs = ["win32_image_util.h"],
-    copts = copts_wtl(),
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
         "//base:coordinates",
-        "//base:logging",
-        "//base:util",
-        "//third_party/wtl",
+        "//base/win32:wide_char",
+        "//bazel/win32:gdi32",
+        "//bazel/win32:user32",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_microsoft_wil//:wil",
     ],
 )
 
@@ -266,34 +279,27 @@ mozc_cc_library(
     name = "win32_renderer_util",
     srcs = ["win32_renderer_util.cc"],
     hdrs = ["win32_renderer_util.h"],
-    copts = copts_wtl(),
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
-    visibility = [
-        "//visibility:private",  # Only private by automation, not intent. Owner may accept CLs adding visibility. See go/scheuklappen#explicit-private.
-    ],
+    visibility = ["//visibility:private"],
     deps = [
-        "//base:logging",
         "//base:system_util",
         "//protocol:renderer_cc_proto",
-        "//third_party/wtl",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
     ],
 )
 
 mozc_cc_test(
     name = "win32_renderer_util_test",
     srcs = ["win32_renderer_util_test.cc"],
-    copts = copts_wtl(),
     tags = MOZC_TAGS.WIN_ONLY,
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
         ":win32_renderer_util",
-        "//base:logging",
-        "//base:util",
         "//protocol:commands_cc_proto",
         "//protocol:renderer_cc_proto",
         "//testing:gunit_main",
-        "//third_party/wtl",
         "@com_google_absl//absl/base",
     ],
 )
@@ -310,7 +316,6 @@ mozc_cc_test(
         ":win32_image_util",
         "//base:file_stream",
         "//base:file_util",
-        "//base:logging",
         "//base/protobuf:text_format",
         "//base/win32:wide_char",
         "//base/win32:win_font_test_helper",
@@ -318,6 +323,8 @@ mozc_cc_test(
         "//data/test/renderer/win32:test_spec_cc_proto",
         "//testing:gunit_main",
         "//testing:mozctest",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@com_microsoft_wil//:wil",
     ],

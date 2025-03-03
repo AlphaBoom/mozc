@@ -48,11 +48,12 @@
 #include <utility>
 #include <vector>
 
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "base/file_stream.h"
-#include "base/logging.h"
 #include "base/util.h"
 #include "base/vlog.h"
 #include "client/client.h"
@@ -251,7 +252,7 @@ class MultiByteTextLineIterator
 
     // strip UTF8 BOM
     if (first_line_ && encoding_type_ == UserDictionaryImporter::UTF8) {
-      Util::StripUtf8Bom(line);
+      *line = Util::StripUtf8Bom(*line);
     }
 
     Util::ChopReturns(line);

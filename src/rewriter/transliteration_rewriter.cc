@@ -29,15 +29,18 @@
 
 #include "rewriter/transliteration_rewriter.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <string>
 #include <type_traits>
 #include <vector>
 
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "base/japanese_util.h"
-#include "base/logging.h"
 #include "base/number_util.h"
 #include "base/text_normalizer.h"
 #include "base/util.h"
@@ -46,42 +49,26 @@
 #include "dictionary/pos_matcher.h"
 #include "protocol/commands.pb.h"
 #include "request/conversion_request.h"
+#include "rewriter/rewriter_interface.h"
 // For T13n normalize
 #include "transliteration/transliteration.h"
-#include "usage_stats/usage_stats.h"
 
 namespace mozc {
 namespace {
 
 bool IsComposerApplicable(const ConversionRequest &request,
                           const Segments *segments) {
-  if (!request.has_composer()) {
-    return false;
-  }
-
-  std::string conversion_query;
-  if (request.request_type() == ConversionRequest::PREDICTION ||
-      request.request_type() == ConversionRequest::SUGGESTION) {
-    request.composer().GetQueryForPrediction(&conversion_query);
-  } else {
-    request.composer().GetQueryForConversion(&conversion_query);
-    if (request.request_type() == ConversionRequest::PARTIAL_PREDICTION ||
-        request.request_type() == ConversionRequest::PARTIAL_SUGGESTION) {
-      Util::Utf8SubString(conversion_query, 0, request.composer().GetCursor(),
-                          &conversion_query);
-    }
-  }
-
   std::string segments_key;
-  for (size_t i = 0; i < segments->conversion_segments_size(); ++i) {
-    segments_key.append(segments->conversion_segment(i).key());
+  for (const Segment &segment : segments->conversion_segments()) {
+    segments_key.append(segment.key());
   }
-  if (conversion_query != segments_key) {
-    DLOG(WARNING) << "composer seems invalid: composer_key " << conversion_query
-                  << " segments_key " << segments_key;
-    return false;
+  if (request.key() == segments_key) {
+    return true;
   }
-  return true;
+
+  DLOG(WARNING) << "composer seems invalid: composer_key " << request.key()
+                << " segments_key " << segments_key;
+  return false;
 }
 
 void NormalizeT13ns(std::vector<std::string> *t13ns) {
@@ -156,8 +143,8 @@ void ModifyT13nsForGodan(const absl::string_view key,
   //   Thus, as a work around, we set the original key, so that it'll be
   //   removed in the later phase of de-dupping.
   const absl::string_view half_ascii = dst.empty() ? key : dst;
-  std::string full_ascii;
-  japanese_util::HalfWidthAsciiToFullWidthAscii(half_ascii, &full_ascii);
+  std::string full_ascii =
+      japanese_util::HalfWidthAsciiToFullWidthAscii(half_ascii);
   std::string half_ascii_upper(half_ascii);
   std::string half_ascii_lower(half_ascii);
   std::string half_ascii_capitalized(half_ascii);
@@ -181,12 +168,12 @@ void ModifyT13nsForGodan(const absl::string_view key,
   (*t13ns)[transliteration::FULL_ASCII_CAPITALIZED] = full_ascii_capitalized;
 }
 
-bool IsTransliterated(const std::vector<std::string> &t13ns) {
+bool IsTransliterated(absl::Span<const std::string> t13ns) {
   if (t13ns.empty() || t13ns[0].empty()) {
     return false;
   }
 
-  const std::string &base_candidate = t13ns[0];
+  absl::string_view base_candidate = t13ns[0];
   for (size_t i = 1; i < t13ns.size(); ++i) {
     if (t13ns[i] != base_candidate) {
       return true;
@@ -255,28 +242,24 @@ bool TransliterationRewriter::FillT13nsFromComposer(
     Segment *segment = segments->mutable_conversion_segment(0);
     CHECK(segment);
     ModifyT13ns(request, *segment, &t13ns);
-    std::string key;
-    request.composer().GetQueryForConversion(&key);
+    const std::string key = request.composer().GetQueryForConversion();
     return SetTransliterations(t13ns, key, segment);
   }
 
   bool modified = false;
   size_t composition_pos = 0;
-  for (size_t i = 0; i < segments->conversion_segments_size(); ++i) {
-    Segment *segment = segments->mutable_conversion_segment(i);
-    CHECK(segment);
-    const std::string &key = segment->key();
-    if (key.empty()) {
+  for (Segment &segment : segments->conversion_segments()) {
+    const size_t composition_len = segment.key_len();
+    if (composition_len == 0) {
       continue;
     }
-    const size_t composition_len = Util::CharsLen(key);
     std::vector<std::string> t13ns;
     request.composer().GetSubTransliterations(composition_pos, composition_len,
                                               &t13ns);
     composition_pos += composition_len;
 
-    ModifyT13ns(request, *segment, &t13ns);
-    modified |= SetTransliterations(t13ns, key, segment);
+    ModifyT13ns(request, segment, &t13ns);
+    modified |= SetTransliterations(t13ns, segment.key(), &segment);
   }
   return modified;
 }
@@ -286,20 +269,19 @@ bool TransliterationRewriter::FillT13nsFromComposer(
 // ('n' or 'nn' for "ん", etc)
 bool TransliterationRewriter::FillT13nsFromKey(Segments *segments) const {
   bool modified = false;
-  for (size_t i = 0; i < segments->conversion_segments_size(); ++i) {
-    Segment *segment = segments->mutable_conversion_segment(i);
-    CHECK(segment);
-    if (segment->key().empty()) {
+  for (Segment &segment : segments->conversion_segments()) {
+    if (segment.key().empty()) {
       continue;
     }
-    const std::string &hiragana = segment->key();
-    std::string full_katakana, ascii;
-    japanese_util::HiraganaToKatakana(hiragana, &full_katakana);
-    japanese_util::HiraganaToRomanji(hiragana, &ascii);
-    std::string half_ascii, full_ascii, half_katakana;
-    japanese_util::FullWidthAsciiToHalfWidthAscii(ascii, &half_ascii);
-    japanese_util::HalfWidthAsciiToFullWidthAscii(half_ascii, &full_ascii);
-    japanese_util::FullWidthToHalfWidth(full_katakana, &half_katakana);
+    const std::string &hiragana = segment.key();
+    std::string full_katakana = japanese_util::HiraganaToKatakana(hiragana);
+    std::string ascii = japanese_util::HiraganaToRomanji(hiragana);
+    std::string half_ascii =
+        japanese_util::FullWidthAsciiToHalfWidthAscii(ascii);
+    std::string full_ascii =
+        japanese_util::HalfWidthAsciiToFullWidthAscii(half_ascii);
+    std::string half_katakana =
+        japanese_util::FullWidthToHalfWidth(full_katakana);
     std::string half_ascii_upper = half_ascii;
     std::string half_ascii_lower = half_ascii;
     std::string half_ascii_capitalized = half_ascii;
@@ -328,7 +310,7 @@ bool TransliterationRewriter::FillT13nsFromKey(Segments *segments) const {
     t13ns[transliteration::FULL_ASCII_CAPITALIZED] = full_ascii_capitalized;
 
     NormalizeT13ns(&t13ns);
-    modified |= SetTransliterations(t13ns, segment->key(), segment);
+    modified |= SetTransliterations(t13ns, segment.key(), &segment);
   }
   return modified;
 }
@@ -358,19 +340,13 @@ bool TransliterationRewriter::AddRawNumberT13nCandidates(
     // Rewriting multiple segments will not make users happier.
     return false;
   }
-  // This process is done on composer's data.
-  // If the request doesn't have a composer, this method can do nothing.
-  if (!request.has_composer()) {
-    return false;
-  }
-  const composer::Composer &composer = request.composer();
+  const composer::ComposerData &composer = request.composer();
   Segment *segment = segments->mutable_conversion_segment(0);
   // Get the half_ascii T13n text (nearly equal Raw input).
   // Note that only one segment is in the Segments, but sometimes like
   // on partial conversion, segment.key() is different from the size of
   // the whole composition.
-  std::string raw;
-  composer.GetRawSubString(0, Util::CharsLen(segment->key()), &raw);
+  const std::string raw = composer.GetRawSubString(0, segment->key_len());
   if (raw.empty()) {
     return false;
   }
@@ -393,8 +369,7 @@ bool TransliterationRewriter::AddRawNumberT13nCandidates(
   }
 
   // Do the same thing on full form.
-  std::string full_raw;
-  japanese_util::HalfWidthAsciiToFullWidthAscii(raw, &full_raw);
+  std::string full_raw = japanese_util::HalfWidthAsciiToFullWidthAscii(raw);
   DCHECK(!full_raw.empty());
   if (segment->meta_candidates_size() < transliteration::FULL_ASCII ||
       segment->meta_candidate(transliteration::FULL_ASCII).value != full_raw) {
@@ -436,7 +411,7 @@ void TransliterationRewriter::InitT13nCandidate(
 }
 
 bool TransliterationRewriter::SetTransliterations(
-    const std::vector<std::string> &t13ns, const absl::string_view key,
+    absl::Span<const std::string> t13ns, const absl::string_view key,
     Segment *segment) const {
   if (t13ns.size() != transliteration::NUM_T13N_TYPES ||
       !IsTransliterated(t13ns)) {

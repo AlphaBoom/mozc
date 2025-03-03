@@ -33,10 +33,13 @@
 #include <atomic>
 
 #include "absl/base/attributes.h"
+#include "absl/flags/declare.h"
 #include "absl/flags/flag.h"
+#include "absl/log/flags.h"  // IWYU pragma: keep
 
-
-ABSL_FLAG(int, v, 0, "Show all VLOG(m) messages for m <= this.");
+// Abseil defines --v flag. We rely on it to avoid symbol name collision (though
+// not recommended).
+ABSL_DECLARE_FLAG(int, v);
 
 namespace mozc::internal {
 

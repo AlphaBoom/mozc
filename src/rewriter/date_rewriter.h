@@ -30,7 +30,9 @@
 #ifndef MOZC_REWRITER_DATE_REWRITER_H_
 #define MOZC_REWRITER_DATE_REWRITER_H_
 
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -60,10 +62,14 @@ struct DateCandidate {
 class DateRewriter : public RewriterInterface {
  public:
   DateRewriter() = default;
-  explicit DateRewriter(const dictionary::DictionaryInterface *dictionary)
-      : dictionary_(dictionary) {}
+  explicit DateRewriter(const dictionary::DictionaryInterface &dictionary)
+      : dictionary_(&dictionary) {}
 
   int capability(const ConversionRequest &request) const override;
+
+  std::optional<ResizeSegmentsRequest> CheckResizeSegmentsRequest(
+      const ConversionRequest &request,
+      const Segments &segments) const override;
 
   bool Rewrite(const ConversionRequest &request,
                Segments *segments) const override;
@@ -88,19 +94,21 @@ class DateRewriter : public RewriterInterface {
 
   // Converts AD to Japanese ERA.
   // If given string is invalid, this function does not nothing and
-  // returns false
+  // returns an empty vector.
   // The results will have multiple variants.
   // e.g.)
-  //   key              -> results, descriptions
+  //   key              -> list of result and description
   //   -----------------------------------------------
-  //   "へいせい20ねん" -> {"2008年", "２００８年", "二〇〇八年"},
-  //                       {"平成20年", "平成20年", "平成20年"}
-  //   "しょうわ2ねん"  -> {"1927年", "１９２７年", "一九二七年",
-  //                        "1313年", "１３１３年", "一三一三年" },
-  //                       {"昭和2年", "昭和2年", "昭和2年",
-  //                        "正和2年", "正和2年", "正和2年"}
-  static bool EraToAd(absl::string_view key, std::vector<std::string> *results,
-                      std::vector<std::string> *descriptions);
+  //   "へいせい20ねん" -> {{"2008年", "平成20年"}, {"２００８年", "平成20年"},
+  //                       {"二〇〇八年", "平成20年"}}
+  //   "しょうわ2ねん"  -> {{"1927年", "昭和2年"}, {"１９２７年", "昭和2年"},
+  //                       {"一九二七年", "昭和2年"}, {"1313年", "正和2年"},
+  //                       {"１３１３年", "正和2年"}, {"一三一三年", "正和2年"}}
+  //
+  // The `年` suffix is appended to the reuslts if the `key` has the `ねん`
+  // suffix, but it's omitted otherwise.
+  static std::vector<std::pair<std::string, std::string>> EraToAd(
+      absl::string_view key);
 
   // Converts given time to string expression.
   // If given time information is invalid, this function does nothing and
@@ -145,9 +153,18 @@ class DateRewriter : public RewriterInterface {
   static constexpr char kExtraFormatKey[] = "DATE_FORMAT";
 
  private:
-  static bool RewriteDate(Segment *segment, absl::string_view extra_format);
-  static bool RewriteEra(Segment *current_segment, const Segment &next_segment);
-  static bool RewriteAd(Segment *segment);
+  // If the rewrite is done, returns `true` and sets the `num_done_out` to the
+  // number of segments processed. The `num_done_out` is not modified if the
+  // rewrite is not done.
+  static bool RewriteDate(Segment *segment, absl::string_view extra_format,
+                          size_t &num_done_out);
+  static bool RewriteEra(Segments::range segments_range, size_t &num_done_out);
+  static bool RewriteAd(Segments::range segments_range, size_t &num_done_out);
+
+  // Returns the value if rewrite for AD wants to resize the segments.
+  std::optional<ResizeSegmentsRequest> CheckResizeSegmentsForAd(
+      const ConversionRequest &request, const Segments &segments,
+      size_t segment_index) const;
 
   // When only one conversion segment has consecutive number characters,
   // this function adds date and time candidates.
@@ -158,7 +175,7 @@ class DateRewriter : public RewriterInterface {
   //   2020 -> "20時20分、午後8時20分、20:20"
   //   2930 -> "29時30分、29時半、午前5時30分、午前5時半"
   //   123  -> "1月23日、01/23、1:23"
-  static bool RewriteConsecutiveDigits(const composer::Composer &composer,
+  static bool RewriteConsecutiveDigits(const composer::ComposerData &composer,
                                        int insert_position, Segments *segments);
 
   // Helper functions for RewriteConsecutiveDigits().
@@ -172,7 +189,7 @@ class DateRewriter : public RewriterInterface {
       absl::string_view str,
       std::vector<date_rewriter_internal::DateCandidate> *results);
 
-  const dictionary::DictionaryInterface *dictionary_ = nullptr;
+  const dictionary::DictionaryInterface *const dictionary_ = nullptr;
 };
 
 }  // namespace mozc

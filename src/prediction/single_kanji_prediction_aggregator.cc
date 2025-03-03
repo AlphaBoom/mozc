@@ -40,26 +40,17 @@
 #include "base/util.h"
 #include "composer/composer.h"
 #include "converter/segments.h"
-#include "data_manager/data_manager_interface.h"
+#include "data_manager/data_manager.h"
 #include "dictionary/pos_matcher.h"
 #include "dictionary/single_kanji_dictionary.h"
 #include "prediction/result.h"
 #include "protocol/commands.pb.h"
 #include "request/conversion_request.h"
+#include "request/request_util.h"
 
 namespace mozc::prediction {
 
 namespace {
-
-std::string GetKey(const ConversionRequest &request, const Segments &segments) {
-  std::string key;
-  if (request.has_composer()) {
-    request.composer().GetQueryForPrediction(&key);
-  } else {
-    key = segments.conversion_segment(0).key();
-  }
-  return key;
-}
 
 bool UseSvs(const ConversionRequest &request) {
   return request.request()
@@ -80,7 +71,7 @@ void StripLastChar(std::string *key) {
 }  // namespace
 
 SingleKanjiPredictionAggregator::SingleKanjiPredictionAggregator(
-    const DataManagerInterface &data_manager)
+    const DataManager &data_manager)
     : single_kanji_dictionary_(
           new dictionary::SingleKanjiDictionary(data_manager)),
       pos_matcher_(std::make_unique<dictionary::PosMatcher>(
@@ -92,17 +83,20 @@ SingleKanjiPredictionAggregator::~SingleKanjiPredictionAggregator() = default;
 std::vector<Result> SingleKanjiPredictionAggregator::AggregateResults(
     const ConversionRequest &request, const Segments &segments) const {
   std::vector<Result> results;
-  if (!request.request().mixed_conversion()) {
-    return results;
-  }
   constexpr int kMinSingleKanjiSize = 5;
 
   const bool use_svs = UseSvs(request);
 
-  std::string original_input_key = GetKey(request, segments);
+  const std::string original_input_key =
+      request.composer().GetQueryForPrediction();
   int offset = 0;
   for (std::string key = original_input_key; !key.empty();
        StripLastChar(&key)) {
+    if (!request_util::IsAutoPartialSuggestionEnabled(request) &&
+        key != original_input_key) {
+      // Do not include partial results
+      break;
+    }
     std::vector<std::string> kanji_list;
     if (!single_kanji_dictionary_->LookupKanjiEntries(key, use_svs,
                                                       &kanji_list)) {

@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "absl/base/attributes.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "converter/connector.h"
 #include "converter/immutable_converter_interface.h"
@@ -51,24 +52,16 @@
 #include "engine/modules.h"
 #include "prediction/suggestion_filter.h"
 #include "request/conversion_request.h"
-#include "testing/gunit_prod.h"  //  for FRIEND_TEST()
+#include "testing/friend_test.h"
 
 namespace mozc {
 
-class ImmutableConverterImpl : public ImmutableConverterInterface {
+class ImmutableConverter : public ImmutableConverterInterface {
  public:
-  explicit ImmutableConverterImpl(const engine::Modules &modules);
-  ImmutableConverterImpl(
-      const dictionary::DictionaryInterface *dictionary,
-      const dictionary::DictionaryInterface *suffix_dictionary,
-      const dictionary::SuppressionDictionary *suppression_dictionary,
-      const Connector &connector, const Segmenter *segmenter,
-      const dictionary::PosMatcher *pos_matcher,
-      const dictionary::PosGroup *pos_group,
-      const SuggestionFilter &suggestion_filter);
-  ImmutableConverterImpl(const ImmutableConverterImpl &) = delete;
-  ImmutableConverterImpl &operator=(const ImmutableConverterImpl &) = delete;
-  ~ImmutableConverterImpl() override = default;
+  explicit ImmutableConverter(const engine::Modules &modules);
+  ImmutableConverter(const ImmutableConverter &) = delete;
+  ImmutableConverter &operator=(const ImmutableConverter &) = delete;
+  ~ImmutableConverter() override = default;
 
   ABSL_MUST_USE_RESULT bool ConvertForRequest(
       const ConversionRequest &request, Segments *segments) const override;
@@ -77,11 +70,15 @@ class ImmutableConverterImpl : public ImmutableConverterInterface {
   FRIEND_TEST(ImmutableConverterTest, AddPredictiveNodes);
   FRIEND_TEST(ImmutableConverterTest, DummyCandidatesCost);
   FRIEND_TEST(ImmutableConverterTest, DummyCandidatesInnerSegmentBoundary);
+  FRIEND_TEST(ImmutableConverterTest, MakeLatticeKatakana);
   FRIEND_TEST(ImmutableConverterTest, NotConnectedTest);
   FRIEND_TEST(ImmutableConverterTest, PredictiveNodesOnlyForConversionKey);
   FRIEND_TEST(NBestGeneratorTest, InnerSegmentBoundary);
   FRIEND_TEST(NBestGeneratorTest, MultiSegmentConnectionTest);
   FRIEND_TEST(NBestGeneratorTest, SingleSegmentConnectionTest);
+  FRIEND_TEST(NBestGeneratorTest, NoPartialCandidateBetweenAlphabets);
+  FRIEND_TEST(NBestGeneratorTest, NoAlphabetsConnection2Nodes);
+  FRIEND_TEST(NBestGeneratorTest, NoAlphabetsConnection3Nodes);
   friend class NBestGeneratorTest;
 
   enum InsertCandidatesType {
@@ -99,9 +96,9 @@ class ImmutableConverterImpl : public ImmutableConverterInterface {
                         const std::string &original_key, NBestGenerator *nbest,
                         Segment *segment, size_t expand_size) const;
   void InsertDummyCandidates(Segment *segment, size_t expand_size) const;
-  Node *Lookup(int begin_pos, int end_pos, const ConversionRequest &request,
-               bool is_reverse, bool is_prediction, Lattice *lattice) const;
-  Node *AddCharacterTypeBasedNodes(const char *begin, const char *end,
+  Node *Lookup(int begin_pos, const ConversionRequest &request, bool is_reverse,
+               bool is_prediction, Lattice *lattice) const;
+  Node *AddCharacterTypeBasedNodes(absl::string_view key_substr,
                                    Lattice *lattice, Node *nodes) const;
 
   void Resegment(const Segments &segments, const std::string &history_key,
@@ -159,6 +156,10 @@ class ImmutableConverterImpl : public ImmutableConverterInterface {
                                    const Lattice &lattice,
                                    absl::Span<const uint16_t> group,
                                    Segments *segments) const;
+
+  void InsertCandidatesForRealtimeWithCandidateChecker(
+      const ConversionRequest &request, const Lattice &lattice,
+      absl::Span<const uint16_t> group, Segments *segments) const;
 
   // Helper function for InsertCandidates().
   // Returns true if |node| is valid node for segment end.

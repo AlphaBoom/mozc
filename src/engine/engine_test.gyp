@@ -34,35 +34,92 @@
   },
   'targets': [
     {
-      'target_name': 'engine_builder_test',
+      'target_name': 'data_loader_test',
       'type': 'executable',
-      'sources': ['engine_builder_test.cc'],
+      'sources': ['data_loader_test.cc'],
       'dependencies': [
         'engine.gyp:engine_builder',
-        'install_engine_builder_test_src',
+        'install_data_loader_test_src',
         '<(mozc_oss_src_dir)/data_manager/testing/mock_data_manager.gyp:mock_data_manager',
         '<(mozc_oss_src_dir)/testing/testing.gyp:gtest_main',
         '<(mozc_oss_src_dir)/testing/testing.gyp:mozctest',
       ],
     },
     {
-      'target_name': 'install_engine_builder_test_src',
+      'target_name': 'install_data_loader_test_src',
       'type': 'none',
       'copies': [
         {
           'destination': '<(mozc_oss_data_dir)/engine',
           'files': [
-            'engine_builder_test.cc',
+            'data_loader_test.cc',
           ],
         }
       ],
+    },
+    {
+      'target_name': 'engine_internal_test',
+      'type': 'executable',
+      'sources': [
+        'candidate_list_test.cc',
+        'engine_output_test.cc',
+      ],
+      'dependencies': [
+        '<(mozc_oss_src_dir)/base/base.gyp:base',
+        '<(mozc_oss_src_dir)/protocol/protocol.gyp:commands_proto',
+        '<(mozc_oss_src_dir)/protocol/protocol.gyp:config_proto',
+        '<(mozc_oss_src_dir)/testing/testing.gyp:gtest_main',
+        '<(mozc_oss_src_dir)/testing/testing.gyp:mozctest',
+        '<(mozc_oss_src_dir)/testing/testing.gyp:testing_util',
+        'engine.gyp:engine_converter',
+      ],
+      'variables': {
+        'test_size': 'small',
+      },
+    },
+    {
+      'target_name': 'engine_converter_test',
+      'type': 'executable',
+      'sources': [
+        'engine_converter_test.cc',
+      ],
+      'dependencies': [
+        '<(mozc_oss_src_dir)/data_manager/testing/mock_data_manager.gyp:mock_data_manager',
+        '<(mozc_oss_src_dir)/request/request.gyp:request_test_util',
+        '<(mozc_oss_src_dir)/testing/testing.gyp:gtest_main',
+        '<(mozc_oss_src_dir)/testing/testing.gyp:testing',
+        '<(mozc_oss_src_dir)/testing/testing.gyp:testing_util',
+        '<(mozc_oss_src_dir)/testing/testing.gyp:mozctest',
+        'engine.gyp:engine_converter',
+      ],
+    },
+    {
+      'target_name': 'engine_converter_stress_test',
+      'type': 'executable',
+      'sources': [
+        'engine_converter_stress_test.cc'
+      ],
+      'dependencies': [
+        '<(mozc_oss_src_dir)/engine/engine.gyp:mock_data_engine_factory',
+        '<(mozc_oss_src_dir)/testing/testing.gyp:gtest_main',
+        'engine.gyp:engine_converter',
+      ],
+      'variables': {
+        'test_size': 'large',
+      },
     },
     # Test cases meta target: this target is referred from gyp/tests.gyp
     {
       'target_name': 'engine_all_test',
       'type': 'none',
       'dependencies': [
-        'engine_builder_test',
+        ## Stress tests and scenario tests are disabled,
+        ## because they take long time (~100sec in total).
+        ## Those tests are checked by other tools (e.g. Bazel test).
+        # 'engine_converter_stress_test',
+        'engine_converter_test',
+        'engine_internal_test',
+        'data_loader_test',
       ],
     },
   ],

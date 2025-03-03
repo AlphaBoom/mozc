@@ -71,7 +71,6 @@ mozc_cc_library(
         "//base:const",
         "//base:file_stream",
         "//base:file_util",
-        "//base:logging",
         "//base:process",
         "//base:run_level",
         "//base:singleton",
@@ -86,8 +85,10 @@ mozc_cc_library(
         "//protocol:commands_cc_proto",
         "//protocol:config_cc_proto",
         "//session:key_info_util",
-        "//testing:gunit_prod",
+        "//testing:friend_test",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
     ] + mozc_select(
@@ -110,11 +111,9 @@ mozc_cc_test(
     name = "client_test",
     size = "small",
     srcs = ["client_test.cc"],
-    requires_full_emulation = False,
     deps = [
         ":client",
         ":client_interface",
-        "//base:logging",
         "//base:number_util",
         "//base:version",
         "//base/strings:assign",
@@ -126,6 +125,7 @@ mozc_cc_test(
         "//protocol:config_cc_proto",
         "//testing:gunit_main",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -137,6 +137,7 @@ mozc_cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":client_interface",
+        "//ipc",
         "//protocol:commands_cc_proto",
         "//protocol:config_cc_proto",
         "//testing:gunit",
@@ -151,9 +152,8 @@ mozc_cc_binary(
     deps = [
         ":client",
         "//base:init_mozc",
-        "//base:logging",
-        "//base:process",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
     ],
 )
 
@@ -163,12 +163,14 @@ mozc_cc_binary(
     deps = [
         ":client",
         "//base:init_mozc",
-        "//base:logging",
         "//base:vlog",
+        "//protocol:commands_cc_proto",
         "//protocol:renderer_cc_proto",
         "//renderer:renderer_client",
         "//session:random_keyevents_generator",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/time",
     ],
 )
@@ -181,7 +183,6 @@ mozc_cc_binary(
         "//base:file_stream",
         "//base:file_util",
         "//base:init_mozc",
-        "//base:logging",
         "//base:system_util",
         "//base:util",
         "//base:vlog",
@@ -190,6 +191,8 @@ mozc_cc_binary(
         "//protocol:renderer_cc_proto",
         "//renderer:renderer_client",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
@@ -204,7 +207,6 @@ mozc_cc_binary(
         "//base:file_stream",
         "//base:init_mozc",
         "//base:japanese_util",
-        "//base:logging",
         "//base:singleton",
         "//base:stopwatch",
         "//base:util",
@@ -214,6 +216,7 @@ mozc_cc_binary(
         "//session:random_keyevents_generator",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/time",
@@ -227,7 +230,7 @@ mozc_cc_binary(
     deps = [
         ":client",
         "//base:init_mozc",
-        "//base:logging",
+        "@com_google_absl//absl/log",
     ],
 )
 
@@ -259,7 +262,6 @@ mozc_cc_binary(
         "//base:file_stream",
         "//base:init_mozc",
         "//base:japanese_util",
-        "//base:logging",
         "//base:util",
         "//base:vlog",
         "//base/protobuf:message",
@@ -267,6 +269,8 @@ mozc_cc_binary(
         "//protocol:commands_cc_proto",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
     ],

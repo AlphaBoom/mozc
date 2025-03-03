@@ -41,15 +41,12 @@ import sys
 
 def RunOrDie(command):
   """Run the command, or die if it failed."""
-  print("Running: " + command)
   try:
     output = subprocess.check_output(command, shell=True)
     print("==========", file=sys.stderr)
-    print("COMMAND: " + command, file=sys.stderr)
     print(output.decode("utf-8"), file=sys.stderr)
   except subprocess.CalledProcessError as e:
     print("==========", file=sys.stderr)
-    print("ERROR: " + command, file=sys.stderr)
     print(e.output, file=sys.stderr)
     print("==========", file=sys.stderr)
     sys.exit(1)
@@ -131,7 +128,6 @@ def ParseOption():
                     default=False)
   parser.add_option("--verify", dest="verify", action="store_true",
                     default=False)
-  parser.add_option("--notarization_id", dest="notarization_id")
   parser.add_option("--output", dest="output")
   (options, unused_args) = parser.parse_args()
 
@@ -150,7 +146,7 @@ def DumpEnviron():
   print("==================")
 
 
-def Notarize(target, bundle_id):
+def Notarize(target):
   """Execute the notariazation commands."""
 
 
@@ -170,9 +166,7 @@ def main():
   UnlockKeychain(keychain, opts.password)
 
   Codesign(opts.target, keychain=keychain)
-
-  if opts.notarization_id:
-    Notarize(opts.target, opts.notarization_id)
+  Notarize(opts.target)
 
   # Output something to make the processes trackable.
   if opts.output:

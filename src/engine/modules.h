@@ -31,18 +31,21 @@
 #define MOZC_ENGINE_MODULES_H_
 
 #include <memory>
+#include <utility>
 
+#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "converter/connector.h"
 #include "converter/segmenter.h"
-#include "data_manager/data_manager_interface.h"
+#include "data_manager/data_manager.h"
 #include "dictionary/dictionary_interface.h"
 #include "dictionary/pos_group.h"
 #include "dictionary/pos_matcher.h"
 #include "dictionary/suppression_dictionary.h"
-#include "dictionary/user_dictionary.h"
-#include "prediction/rescorer_interface.h"
+#include "engine/supplemental_model_interface.h"
+#include "prediction/single_kanji_prediction_aggregator.h"
 #include "prediction/suggestion_filter.h"
+#include "prediction/zero_query_dict.h"
 
 namespace mozc {
 namespace engine {
@@ -53,7 +56,29 @@ class Modules {
   Modules(const Modules &) = delete;
   Modules &operator=(const Modules &) = delete;
 
-  absl::Status Init(const DataManagerInterface *data_manager);
+  absl::Status Init(std::unique_ptr<const DataManager> data_manager);
+
+  // Preset functions must be called before Init.
+  void PresetPosMatcher(
+      std::unique_ptr<const dictionary::PosMatcher> pos_matcher);
+  void PresetSuppressionDictionary(
+      std::unique_ptr<dictionary::SuppressionDictionary>
+          suppression_dictionary);
+  void PresetUserDictionary(
+      std::unique_ptr<dictionary::UserDictionaryInterface> user_dictionary);
+  void PresetSuffixDictionary(
+      std::unique_ptr<dictionary::DictionaryInterface> suffix_dictionary);
+  void PresetDictionary(
+      std::unique_ptr<dictionary::DictionaryInterface> dictionary);
+  void PresetSingleKanjiPredictionAggregator(
+      std::unique_ptr<const prediction::SingleKanjiPredictionAggregator>
+          single_kanji_prediction_aggregator);
+
+  const DataManager &GetDataManager() const {
+    // DataManager must be valid.
+    DCHECK(data_manager_);
+    return *data_manager_;
+  }
 
   const dictionary::PosMatcher *GetPosMatcher() const {
     return pos_matcher_.get();
@@ -66,7 +91,7 @@ class Modules {
   }
   const Connector &GetConnector() const { return connector_; }
   const Segmenter *GetSegmenter() const { return segmenter_.get(); }
-  dictionary::UserDictionary *GetUserDictionary() const {
+  dictionary::UserDictionaryInterface *GetUserDictionary() const {
     return user_dictionary_.get();
   }
   const dictionary::DictionaryInterface *GetSuffixDictionary() const {
@@ -79,22 +104,46 @@ class Modules {
   const SuggestionFilter &GetSuggestionFilter() const {
     return suggestion_filter_;
   }
-  const prediction::RescorerInterface *GetRescorer() const {
-    return rescorer_.get();
+  const prediction::SingleKanjiPredictionAggregator *
+  GetSingleKanjiPredictionAggregator() const {
+    return single_kanji_prediction_aggregator_.get();
+  }
+  const ZeroQueryDict &GetZeroQueryDict() const { return zero_query_dict_; }
+  const ZeroQueryDict &GetZeroQueryNumberDict() const {
+    return zero_query_number_dict_;
+  }
+
+  const engine::SupplementalModelInterface *GetSupplementalModel() const {
+    return supplemental_model_;
+  }
+
+  engine::SupplementalModelInterface *GetMutableSupplementalModel() {
+    return supplemental_model_;
+  }
+
+  void SetSupplementalModel(
+      engine::SupplementalModelInterface *supplemental_model) {
+    supplemental_model_ = supplemental_model;
   }
 
  private:
+  bool initialized_ = false;
+  std::unique_ptr<const DataManager> data_manager_;
   std::unique_ptr<const dictionary::PosMatcher> pos_matcher_;
   std::unique_ptr<dictionary::SuppressionDictionary> suppression_dictionary_;
   Connector connector_;
   std::unique_ptr<const Segmenter> segmenter_;
-  std::unique_ptr<dictionary::UserDictionary> user_dictionary_;
+  std::unique_ptr<dictionary::UserDictionaryInterface> user_dictionary_;
   std::unique_ptr<dictionary::DictionaryInterface> suffix_dictionary_;
   std::unique_ptr<dictionary::DictionaryInterface> dictionary_;
   std::unique_ptr<const dictionary::PosGroup> pos_group_;
   SuggestionFilter suggestion_filter_;
-  std::unique_ptr<const prediction::RescorerInterface> rescorer_;
-
+  std::unique_ptr<const prediction::SingleKanjiPredictionAggregator>
+      single_kanji_prediction_aggregator_;
+  ZeroQueryDict zero_query_dict_;
+  ZeroQueryDict zero_query_number_dict_;
+  // The owner of supplemental_model_ is Engine.
+  engine::SupplementalModelInterface *supplemental_model_ = nullptr;
 };
 
 }  // namespace engine

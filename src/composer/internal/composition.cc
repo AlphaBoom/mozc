@@ -29,17 +29,21 @@
 
 #include "composer/internal/composition.h"
 
+#include <cstddef>
 #include <iterator>
-#include <set>
+#include <memory>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include "absl/algorithm/container.h"
+#include "absl/container/btree_set.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "base/logging.h"
 #include "base/util.h"
 #include "base/vlog.h"
 #include "composer/internal/char_chunk.h"
@@ -165,7 +169,7 @@ size_t Composition::ConvertPosition(
   const size_t chunk_length_to = chunk_it->GetLength(transliterator_to);
   if (inner_position_from == chunk_length_from) {
     // If the inner_position_from is the end of the chunk (ex. "ka|"
-    // vs "か"), the converterd position should be the end of the
+    // vs "か"), the converted position should be the end of the
     // chunk too (ie. "か|").
     return position_to + chunk_length_to;
   }
@@ -234,92 +238,85 @@ size_t Composition::GetLength() const {
   return GetPosition(Transliterators::LOCAL, chunks_.end());
 }
 
-void Composition::GetStringWithModes(
-    Transliterators::Transliterator transliterator, const TrimMode trim_mode,
-    std::string *composition) const {
-  composition->clear();
+std::string Composition::GetStringWithModes(
+    Transliterators::Transliterator transliterator,
+    const TrimMode trim_mode) const {
   if (chunks_.empty()) {
     // This is not an error. For example, the composition should be empty for
     // the first keydown event after turning on the IME.
-    DCHECK(composition->empty()) << "An empty string should be returned.";
-    return;
+    return std::string();
   }
 
   CharChunkList::const_iterator it;
+  std::string composition;
   for (it = chunks_.begin(); it != std::prev(chunks_.end()); ++it) {
-    it->AppendResult(transliterator, composition);
+    it->AppendResult(transliterator, &composition);
   }
 
   switch (trim_mode) {
     case TRIM:
-      it->AppendTrimedResult(transliterator, composition);
+      it->AppendTrimedResult(transliterator, &composition);
       break;
     case ASIS:
-      it->AppendResult(transliterator, composition);
+      it->AppendResult(transliterator, &composition);
       break;
     case FIX:
-      it->AppendFixedResult(transliterator, composition);
+      it->AppendFixedResult(transliterator, &composition);
       break;
     default:
       LOG(WARNING) << "Unexpected trim mode: " << trim_mode;
       break;
   }
+  return composition;
 }
 
-void Composition::GetExpandedStrings(std::string *base,
-                                     std::set<std::string> *expanded) const {
-  GetExpandedStringsWithTransliterator(Transliterators::LOCAL, base, expanded);
-}
-
-void Composition::GetExpandedStringsWithTransliterator(
-    Transliterators::Transliterator transliterator, std::string *base,
-    std::set<std::string> *expanded) const {
-  DCHECK(base);
-  DCHECK(expanded);
-  base->clear();
-  expanded->clear();
+std::pair<std::string, absl::btree_set<std::string>>
+Composition::GetExpandedStrings() const {
+  Transliterators::Transliterator transliterator = Transliterators::LOCAL;
   if (chunks_.empty()) {
     MOZC_VLOG(1) << "The composition size is zero.";
-    return;
+    return std::make_pair(std::string(), absl::btree_set<std::string>());
   }
 
+  std::string base;
   CharChunkList::const_iterator it;
   for (it = chunks_.begin(); it != std::prev(chunks_.end()); ++it) {
-    it->AppendResult(transliterator, base);
+    it->AppendResult(transliterator, &base);
   }
 
-  chunks_.back().AppendTrimedResult(transliterator, base);
+  chunks_.back().AppendTrimedResult(transliterator, &base);
   // Get expanded from the last chunk
-  chunks_.back().GetExpandedResults(expanded);
+  const absl::btree_set<std::string> expanded =
+      chunks_.back().GetExpandedResults();
+  return std::make_pair(base, expanded);
 }
 
-void Composition::GetString(std::string *composition) const {
-  composition->clear();
+std::string Composition::GetString() const {
   if (chunks_.empty()) {
     MOZC_VLOG(1) << "The composition size is zero.";
-    return;
+    return std::string();
   }
 
+  std::string composition;
   for (CharChunkList::const_iterator it = chunks_.begin(); it != chunks_.end();
        ++it) {
-    it->AppendResult(Transliterators::LOCAL, composition);
+    it->AppendResult(Transliterators::LOCAL, &composition);
   }
+  return composition;
 }
 
-void Composition::GetStringWithTransliterator(
-    Transliterators::Transliterator transliterator, std::string *output) const {
-  GetStringWithModes(transliterator, FIX, output);
+std::string Composition::GetStringWithTransliterator(
+    Transliterators::Transliterator transliterator) const {
+  return GetStringWithModes(transliterator, FIX);
 }
 
-void Composition::GetStringWithTrimMode(const TrimMode trim_mode,
-                                        std::string *output) const {
-  GetStringWithModes(Transliterators::LOCAL, trim_mode, output);
+std::string Composition::GetStringWithTrimMode(const TrimMode trim_mode) const {
+  return GetStringWithModes(Transliterators::LOCAL, trim_mode);
 }
 
 void Composition::GetPreedit(size_t position, std::string *left,
                              std::string *focused, std::string *right) const {
-  std::string composition;
-  GetString(&composition);
+  const std::string composition = GetString();
   Util::Utf8SubString(composition, 0, position, left);
   Util::Utf8SubString(composition, position, 1, focused);
   Util::Utf8SubString(composition, position + 1, std::string::npos, right);
@@ -407,7 +404,7 @@ void Composition::CombinePendingChunks(CharChunkList::iterator it,
   while (it != chunks_.begin()) {
     CharChunkList::iterator left_it = it;
     --left_it;
-    if (!left_it->IsConvertible(input_t12r_, table_,
+    if (!left_it->IsConvertible(input_t12r_, *table_,
                                 absl::StrCat(it->pending(), next_input))) {
       return;
     }
@@ -438,7 +435,7 @@ CharChunkList::iterator Composition::GetInsertionChunk(
   }
 
   const CharChunkList::iterator left_it = std::prev(it);
-  if (left_it->IsAppendable(input_t12r_, table_)) {
+  if (left_it->IsAppendable(input_t12r_, *table_)) {
     return left_it;
   }
   return InsertChunk(it);
@@ -448,7 +445,10 @@ void Composition::SetInputMode(Transliterators::Transliterator transliterator) {
   input_t12r_ = transliterator;
 }
 
-void Composition::SetTable(const Table *table) { table_ = table; }
+void Composition::SetTable(std::shared_ptr<const Table> table) {
+  DCHECK(table);
+  table_ = std::move(table);
+}
 
 bool Composition::IsToggleable(size_t position) const {
   size_t inner_position = 0;

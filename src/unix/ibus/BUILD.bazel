@@ -27,6 +27,8 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
+load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 load(
     "//:build_defs.bzl",
     "mozc_cc_binary",
@@ -120,11 +122,12 @@ mozc_cc_library(
         ":ibus_wrapper",
         "//base:const",
         "//base:file_util",
-        "//base:logging",
         "//base:port",
         "//base:system_util",
         "//client",
         "//protocol:commands_cc_proto",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
     ] + mozc_select(
         linux = ["//third_party/ibus"],
@@ -146,9 +149,8 @@ mozc_cc_library(
         "MOZC_IBUS_INSTALL_DIR=\\\"" + IBUS_MOZC_INSTALL_DIR + "\\\"",
     ],
     deps = [
-        "//base:logging",
-        "//base:port",
         "//base:util",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -205,20 +207,22 @@ mozc_cc_library(
         "//base:clock",
         "//base:const",
         "//base:file_util",
-        "//base:logging",
         "//base:port",
         "//base:singleton",
         "//base:system_util",
         "//base:util",
         "//base:vlog",
+        "//base/container:flat_map",
         "//client",
-        "//protocol:candidates_cc_proto",
+        "//protocol:candidate_window_cc_proto",
         "//protocol:commands_cc_proto",
         "//protocol:config_cc_proto",
         "//renderer:renderer_client",
-        "//testing:gunit_prod",
+        "//testing:friend_test",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/time",
@@ -248,10 +252,11 @@ mozc_cc_library(
     deps = [
         ":ibus_config_cc_proto",
         "//base:file_util",
-        "//base:logging",
         "//base:system_util",
         "//base/protobuf:text_format",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -262,6 +267,7 @@ mozc_cc_test(
     srcs = ["ibus_config_test.cc"],
     deps = [
         ":ibus_config",
+        ":ibus_config_cc_proto",
         "//testing:gunit_main",
     ],
 )
@@ -279,19 +285,15 @@ mozc_cc_binary(
         ":gen_mozc_xml",
         "//unix:icons",
     ],
-    defines = mozc_select(
-        linux = ["MOZC_NO_LOGGING"],
-        oss_linux = [],
-    ),
     deps = [
         ":ibus_config",
         ":ibus_header",
         ":ibus_mozc_lib",
         ":ibus_utils",
         "//base:init_mozc",
-        "//base:logging",
         "//base:version",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -314,14 +316,12 @@ mozc_cc_test(
         "//base:port",
         "//base:util",
         "//base/protobuf",
-        "//client",
         "//client:client_mock",
         "//protocol:commands_cc_proto",
         "//protocol:config_cc_proto",
         "//testing:gunit_main",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/random",
-        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
     ],
 )
@@ -339,13 +339,14 @@ mozc_cc_library(
     deps = [
         ":ibus_header",
         "//base:coordinates",
-        "//base:logging",
         "//base:port",
-        "//protocol:candidates_cc_proto",
+        "//protocol:candidate_window_cc_proto",
         "//protocol:commands_cc_proto",
         "//protocol:renderer_cc_proto",
         "//renderer:renderer_client",
         "//renderer:renderer_interface",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
     ] + mozc_select(
         linux = [
@@ -366,7 +367,8 @@ mozc_cc_test(
     deps = [
         ":candidate_window_handler",
         "//base:coordinates",
-        "//protocol:candidates_cc_proto",
+        "//base/protobuf:text_format",
+        "//protocol:candidate_window_cc_proto",
         "//protocol:commands_cc_proto",
         "//protocol:renderer_cc_proto",
         "//renderer:renderer_mock",

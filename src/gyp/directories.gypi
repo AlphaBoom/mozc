@@ -51,6 +51,10 @@
     # extracted. This value is ignored when 'use_libprotobuf' is 1.
     'protobuf_root': '<(third_party_dir)/protobuf',
 
+    'gtest_base_dir': '<(third_party_dir)/gtest',
+    'gtest_dir': '<(gtest_base_dir)/googletest',
+    'gmock_dir': '<(gtest_base_dir)/googlemock',
+
     'mozc_data_dir': '<(SHARED_INTERMEDIATE_DIR)/',
     'mozc_oss_data_dir': '<(SHARED_INTERMEDIATE_DIR)/',
 
@@ -61,12 +65,6 @@
     # See post_build_mac.gypi
     'mac_breakpad_tools_dir': '${BUILT_PRODUCTS_DIR}/Breakpad',
     'mac_breakpad_framework': '<(mac_breakpad_dir)/Breakpad.framework',
-
-    'conditions': [
-      ['target_platform=="Windows"', {
-        'wtl_dir': '<(third_party_dir)/wtl',
-      }],
-    ],
 
     # glob command to get files.
     'glob': '<(python) <(abs_depth)/gyp/glob_files.py',

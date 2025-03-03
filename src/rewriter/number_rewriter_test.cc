@@ -29,27 +29,27 @@
 
 #include "rewriter/number_rewriter.h"
 
+#include <array>
 #include <cstddef>
 #include <iterator>
 #include <memory>
 #include <string>
 
+#include "absl/log/check.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
-#include "base/logging.h"
 #include "base/number_util.h"
 #include "base/strings/assign.h"
 #include "config/character_form_manager.h"
-#include "config/config_handler.h"
 #include "converter/segments.h"
 #include "converter/segments_matchers.h"
 #include "data_manager/testing/mock_data_manager.h"
 #include "dictionary/pos_matcher.h"
 #include "protocol/commands.pb.h"
 #include "request/conversion_request.h"
+#include "request/request_test_util.h"
 #include "rewriter/rewriter_interface.h"
-#include "session/request_test_util.h"
 #include "testing/gmock.h"
 #include "testing/gunit.h"
 #include "testing/mozctest.h"
@@ -132,7 +132,7 @@ class NumberRewriterTest : public testing::TestWithTempUserProfile {
   }
 
   std::unique_ptr<NumberRewriter> CreateNumberRewriter() {
-    return std::make_unique<NumberRewriter>(&mock_data_manager_);
+    return std::make_unique<NumberRewriter>(mock_data_manager_);
   }
 
   const testing::MockDataManager mock_data_manager_;
@@ -216,8 +216,9 @@ TEST_F(NumberRewriterTest, RequestType) {
     candidate->rid = pos_matcher_.GetNumberId();
     candidate->value = "012";
     candidate->content_value = "012";
-    ConversionRequest request;
-    request.set_request_type(test_data.request_type_);
+    const ConversionRequest request =
+        ConversionRequestBuilder().SetRequestType(test_data.request_type_)
+            .Build();
     EXPECT_TRUE(number_rewriter->Rewrite(request, &segments));
     EXPECT_EQ(seg->candidates_size(), test_data.expected_candidate_number_);
   }
@@ -815,51 +816,53 @@ TEST_F(NumberRewriterTest, SeparatedArabicsTest) {
   std::unique_ptr<NumberRewriter> number_rewriter(CreateNumberRewriter());
 
   // Expected data to succeed tests.
-  constexpr const char *kSuccess[][3] = {
+  constexpr std::array<std::array<absl::string_view, 3>, 3> kSuccess = {{
       {"1000", "1,000", "１，０００"},
       {"12345678", "12,345,678", "１２，３４５，６７８"},
       {"1234.5", "1,234.5", "１，２３４．５"},
-  };
+  }};
 
-  for (size_t i = 0; i < std::size(kSuccess); ++i) {
+  for (const std::array<absl::string_view, 3> &success : kSuccess) {
     Segments segments;
     Segment *seg = segments.push_back_segment();
     Segment::Candidate *candidate = seg->add_candidate();
     candidate->lid = pos_matcher_.GetNumberId();
     candidate->rid = pos_matcher_.GetNumberId();
-    candidate->key = kSuccess[i][0];
-    candidate->content_key = kSuccess[i][0];
-    candidate->value = kSuccess[i][0];
-    candidate->content_value = kSuccess[i][0];
+    candidate->key = success[0];
+    candidate->content_key = success[0];
+    candidate->value = success[0];
+    candidate->content_value = success[0];
+
     EXPECT_TRUE(number_rewriter->Rewrite(default_request_, &segments));
-    EXPECT_TRUE(FindValue(segments.segment(0), kSuccess[i][1]))
-        << "Input : " << kSuccess[i][0];
-    EXPECT_TRUE(FindValue(segments.segment(0), kSuccess[i][2]))
-        << "Input : " << kSuccess[i][0];
+    EXPECT_TRUE(FindValue(segments.segment(0), success[1]))
+        << "Input : " << success[0];
+    EXPECT_TRUE(FindValue(segments.segment(0), success[2]))
+        << "Input : " << success[0];
   }
 
   // Expected data to fail tests.
-  constexpr const char *kFail[][3] = {
+  constexpr std::array<std::array<absl::string_view, 3>, 3> kFail = {{
       {"123", ",123", "，１２３"},
       {"999", ",999", "，９９９"},
       {"0000", "0,000", "０，０００"},
-  };
+  }};
 
-  for (size_t i = 0; i < std::size(kFail); ++i) {
+  for (const std::array<absl::string_view, 3> &fail : kFail) {
     Segments segments;
     Segment *seg = segments.push_back_segment();
     Segment::Candidate *candidate = seg->add_candidate();
     candidate->lid = pos_matcher_.GetNumberId();
     candidate->rid = pos_matcher_.GetNumberId();
-    candidate->key = kFail[i][0];
-    candidate->content_key = kFail[i][0];
-    candidate->value = kFail[i][0];
-    candidate->content_value = kFail[i][0];
+    candidate->key = fail[0];
+    candidate->content_key = fail[0];
+    candidate->value = fail[0];
+    candidate->content_value = fail[0];
+
     EXPECT_TRUE(number_rewriter->Rewrite(default_request_, &segments));
-    EXPECT_FALSE(FindValue(segments.segment(0), kFail[i][1]))
-        << "Input : " << kFail[i][0];
-    EXPECT_FALSE(FindValue(segments.segment(0), kFail[i][2]))
-        << "Input : " << kFail[i][0];
+    EXPECT_FALSE(FindValue(segments.segment(0), fail[1]))
+        << "Input : " << fail[0];
+    EXPECT_FALSE(FindValue(segments.segment(0), fail[2]))
+        << "Input : " << fail[0];
   }
 }
 
@@ -908,18 +911,20 @@ TEST_F(NumberRewriterTest, PreserveUserDictionaryAttribute) {
 TEST_F(NumberRewriterTest, DuplicateCandidateTest) {
   // To reproduce issue b/6714268.
   std::unique_ptr<NumberRewriter> number_rewriter(CreateNumberRewriter());
-  ConversionRequest convreq;
   commands::Request request;
-  convreq.set_request(&request);
   std::unique_ptr<NumberRewriter> rewriter(CreateNumberRewriter());
 
   {
     request.set_mixed_conversion(true);
+    const ConversionRequest convreq =
+      ConversionRequestBuilder().SetRequest(request).Build();
     EXPECT_EQ(rewriter->capability(convreq), RewriterInterface::ALL);
   }
 
   {
     request.set_mixed_conversion(false);
+    const ConversionRequest convreq =
+      ConversionRequestBuilder().SetRequest(request).Build();
     EXPECT_EQ(rewriter->capability(convreq), RewriterInterface::CONVERSION);
   }
 }
@@ -946,7 +951,7 @@ TEST_F(NumberRewriterTest, RewriteArabicNumberTest) {
   Segment *segment = segments.push_back_segment();
   segment->set_key("いち");
   struct CandData {
-    const char *value;
+    const absl::string_view value;
     int pos_id;
   };
   const CandData kCandList[] = {
@@ -1160,10 +1165,7 @@ void LearnNumberStyle(const ConversionRequest &request,
 
 TEST_F(NumberRewriterTest, NumberStyleLearningNotEnabled) {
   std::unique_ptr<NumberRewriter> rewriter(CreateNumberRewriter());
-  commands::Request request;
-  ConversionRequest convreq(nullptr, &request,
-                            &config::ConfigHandler::DefaultConfig());
-
+  const ConversionRequest convreq;
   LearnNumberStyle(convreq, pos_matcher_, *rewriter);
 
   {
@@ -1185,21 +1187,20 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         []() {
           commands::Request request;
-          commands::RequestForUnitTest::FillMobileRequest(&request);
+          request_test_util::FillMobileRequest(&request);
           return request;
         }(),
         []() {
           commands::Request request;
-          commands::RequestForUnitTest::FillMobileRequestWithHardwareKeyboard(
-              &request);
+          request_test_util::FillMobileRequestWithHardwareKeyboard(&request);
           return request;
         }()));
 
 TEST_P(NumberStyleLearningTest, NumberRewriterTest) {
   std::unique_ptr<NumberRewriter> rewriter(CreateNumberRewriter());
   const commands::Request request = GetParam();
-  ConversionRequest convreq(nullptr, &request,
-                            &config::ConfigHandler::DefaultConfig());
+  const ConversionRequest convreq =
+      ConversionRequestBuilder().SetRequest(request).Build();
 
   LearnNumberStyle(convreq, pos_matcher_, *rewriter);
 
@@ -1251,4 +1252,74 @@ TEST_P(NumberStyleLearningTest, NumberRewriterTest) {
   }
 }
 
+TEST_F(NumberRewriterTest, NoModification) {
+  std::unique_ptr<NumberRewriter> number_rewriter(CreateNumberRewriter());
+  Segments segments;
+  Segment *seg = segments.push_back_segment();
+  for (int i = 0; i < 3; ++i) {
+    Segment::Candidate *candidate = seg->add_candidate();
+    candidate->lid = pos_matcher_.GetGeneralNounId();
+    candidate->rid = pos_matcher_.GetGeneralNounId();
+    candidate->key = "さん";
+    candidate->content_key = candidate->key;
+    candidate->value = "3";
+    candidate->content_value = candidate->value;
+    candidate->cost = 5925;
+    candidate->wcost = 5000;
+    if (i == 0) {
+      candidate->attributes = Segment::Candidate::NO_MODIFICATION;
+    }
+  }
+
+  EXPECT_EQ(seg->candidates_size(), 3);
+  EXPECT_TRUE(number_rewriter->Rewrite(default_request_, &segments));
+  EXPECT_EQ(seg->candidate(0).value, "3");
+  EXPECT_GT(seg->candidates_size(), 3);
+}
+
+TEST_F(NumberRewriterTest, RewriteMultipleTimes) {
+  std::unique_ptr<NumberRewriter> number_rewriter(CreateNumberRewriter());
+  Segments segments;
+  Segment *seg = segments.push_back_segment();
+  seg->set_key("１２");
+
+  Segment::Candidate *candidate = seg->add_candidate();
+  candidate->lid = pos_matcher_.GetGeneralNounId();
+  candidate->rid = pos_matcher_.GetGeneralNounId();
+  candidate->key = "１２";
+  candidate->content_key = candidate->key;
+  candidate->value = "１２";
+  candidate->content_value = candidate->value;
+  candidate->cost = 5925;
+  candidate->wcost = 5000;
+
+  EXPECT_TRUE(number_rewriter->Rewrite(default_request_, &segments));
+  EXPECT_EQ(seg->candidates_size(), 11);
+  EXPECT_EQ(seg->candidate(0).value, "12");
+  EXPECT_EQ(seg->candidate(1).value, "一二");
+  EXPECT_EQ(seg->candidate(2).value, "１２");
+  EXPECT_EQ(seg->candidate(3).value, "十二");
+  EXPECT_EQ(seg->candidate(4).value, "壱拾弐");
+  EXPECT_EQ(seg->candidate(5).value, "Ⅻ");
+  EXPECT_EQ(seg->candidate(6).value, "ⅻ");
+  EXPECT_EQ(seg->candidate(7).value, "⑫");
+  EXPECT_EQ(seg->candidate(8).value, "0xc");
+  EXPECT_EQ(seg->candidate(9).value, "014");
+  EXPECT_EQ(seg->candidate(10).value, "0b1100");
+
+  // Rewriting multiple times should not change the result.
+  EXPECT_FALSE(number_rewriter->Rewrite(default_request_, &segments));
+  EXPECT_EQ(seg->candidates_size(), 11);
+  EXPECT_EQ(seg->candidate(0).value, "12");
+  EXPECT_EQ(seg->candidate(1).value, "一二");
+  EXPECT_EQ(seg->candidate(2).value, "１２");
+  EXPECT_EQ(seg->candidate(3).value, "十二");
+  EXPECT_EQ(seg->candidate(4).value, "壱拾弐");
+  EXPECT_EQ(seg->candidate(5).value, "Ⅻ");
+  EXPECT_EQ(seg->candidate(6).value, "ⅻ");
+  EXPECT_EQ(seg->candidate(7).value, "⑫");
+  EXPECT_EQ(seg->candidate(8).value, "0xc");
+  EXPECT_EQ(seg->candidate(9).value, "014");
+  EXPECT_EQ(seg->candidate(10).value, "0b1100");
+}
 }  // namespace mozc

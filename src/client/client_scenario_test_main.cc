@@ -32,6 +32,7 @@
 // events specified by FLAGS_input file or interactive standard input.  Input
 // file format is same as one of session/session_client_main.
 
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <istream>
@@ -40,6 +41,8 @@
 #include <vector>
 
 #include "absl/flags/flag.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "absl/time/clock.h"
@@ -47,7 +50,6 @@
 #include "base/file_stream.h"
 #include "base/file_util.h"
 #include "base/init_mozc.h"
-#include "base/logging.h"
 #include "base/system_util.h"
 #include "base/util.h"
 #include "base/vlog.h"
@@ -147,20 +149,19 @@ int Loop(std::istream *input) {
       if (absl::GetFlag(FLAGS_test_testsendkey)) {
         MOZC_VLOG(2) << "Sending to Server: " << keys[i];
         client.TestSendKey(keys[i], &output);
-        MOZC_VLOG(2) << "Output of TestSendKey: " << MOZC_LOG_PROTOBUF(output);
+        MOZC_VLOG(2) << "Output of TestSendKey: " << output;
         absl::SleepFor(absl::Milliseconds(10));
       }
 
       MOZC_VLOG(2) << "Sending to Server: " << keys[i];
       client.SendKey(keys[i], &output);
-      MOZC_VLOG(2) << "Output of SendKey: " << MOZC_LOG_PROTOBUF(output);
+      MOZC_VLOG(2) << "Output of SendKey: " << output;
 
       if (renderer_client != nullptr) {
         renderer_command.set_type(commands::RendererCommand::UPDATE);
-        renderer_command.set_visible(output.has_candidates());
+        renderer_command.set_visible(output.has_candidate_window());
         *renderer_command.mutable_output() = output;
-        MOZC_VLOG(2) << "Sending to Renderer: "
-                     << MOZC_LOG_PROTOBUF(renderer_command);
+        MOZC_VLOG(2) << "Sending to Renderer: " << renderer_command;
         renderer_client->ExecCommand(renderer_command);
       }
     }

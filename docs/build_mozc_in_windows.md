@@ -14,9 +14,6 @@ git clone https://github.com/google/mozc.git
 cd mozc\src
 
 python build_tools/update_deps.py
-
-"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsamd64_x86.bat"
-
 python build_tools/build_qt.py --release --confirm_license
 python build_mozc.py gyp
 python build_mozc.py build -c Release package
@@ -26,6 +23,8 @@ out_win\Release\Mozc64.msi
 ```
 
 Hint: You can also download `Mozc64.msi` from GitHub Actions. Check [Build with GitHub Actions](#build-with-github-actions) for details.
+
+Hint: You can use Bazel to build Mozc (experimental). For details, please see below.
 
 ## Setup
 
@@ -42,6 +41,9 @@ Building Mozc on Windows requires the following software.
   * Python 3.9 or later with the following pip modules.
     * `six`
     * `requests`
+  * `.NET 6` or later (for `dotnet` command).
+
+For additional requirements for building Mozc with Bazel, please see below.
 
 ### Install pip modules
 
@@ -66,23 +68,15 @@ python build_tools/update_deps.py
 
 In this step, additional build dependencies will be downloaded.
 
+  * [LLVM 19.1.7](https://github.com/llvm/llvm-project/releases/tag/llvmorg-19.1.7)
   * [Ninja 1.11.0](https://github.com/ninja-build/ninja/releases/download/v1.11.0/ninja-win.zip)
-  * [Qt 6.6.1](https://download.qt.io/archive/qt/6.6/6.6.1/submodules/qtbase-everywhere-src-6.6.1.tar.xz)
-  * [WiX 3.14.0.6526](https://wixtoolset.org/downloads/v3.14.0.6526/wix314-binaries.zip)
+  * [Qt 6.8.0](https://download.qt.io/archive/qt/6.8/6.8.0/submodules/qtbase-everywhere-src-6.8.0.tar.xz)
+  * [.NET tools](../dotnet-tools.json)
   * [git submodules](../.gitmodules)
 
 You can skip this step if you would like to manually download these libraries.
 
 ## Build
-
-### Setup Build system
-
-If you have not set up the build system in your command prompt, you might need
-to execute the setup command like this.
-
-```
-"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsamd64_x86.bat"
-```
 
 ### Build Qt
 
@@ -166,6 +160,32 @@ python build_mozc.py runtests -c Release
 ```
 
 Note that you can specify `--qtdir=` option instead of `--noqt` in GYP phase since currently there is no unit test that depends on Qt.
+
+---
+
+## Build with Bazel (experimental)
+
+Additional requirements:
+
+* [Bazelisk](https://github.com/bazelbuild/bazelisk)
+  * Bazelisk is a wrapper of [Bazel](https://bazel.build) to use the specific version of Bazel.
+  * [src/.bazeliskrc](../src/.bazeliskrc) controls which version of Bazel is used.
+* [MSYS2](https://github.com/msys2/msys2)
+
+After running `build_tools/update_deps.py` and `build_tools/build_qt.py`, run the following command instead of `build_mozc.py`:
+
+```
+bazelisk --bazelrc=windows.bazelrc build --config oss_windows --config release_build package
+```
+
+You have release build binaries in `bazel-bin\win32\installer\Mozc64.msi`.
+
+### Tips for Bazel setup
+
+* You do not need to install a new JDK just for Mozc.
+* If you installed Bazel via [Scoop](https://scoop.sh), it is recommended to install MSYS2 via Scoop, too.
+
+https://bazel.build/install/windows?hl=ja#install-compilers
 
 ---
 

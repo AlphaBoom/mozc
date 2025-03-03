@@ -31,7 +31,7 @@
 #define MOZC_REWRITER_USAGE_REWRITER_H_
 
 #ifndef NO_USAGE_REWRITER
-
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <new>
@@ -42,18 +42,19 @@
 #include "absl/strings/string_view.h"
 #include "base/container/serialized_string_array.h"
 #include "converter/segments.h"
-#include "data_manager/data_manager_interface.h"
+#include "data_manager/data_manager.h"
 #include "dictionary/dictionary_interface.h"
 #include "dictionary/pos_matcher.h"
+#include "request/conversion_request.h"
 #include "rewriter/rewriter_interface.h"
-#include "testing/gunit_prod.h"  // for FRIEND_TEST()
+#include "testing/friend_test.h"
 
 namespace mozc {
 
 class UsageRewriter : public RewriterInterface {
  public:
-  UsageRewriter(const DataManagerInterface *data_manager,
-                const dictionary::DictionaryInterface *dictionary);
+  UsageRewriter(const DataManager &data_manager,
+                const dictionary::DictionaryInterface &dictionary);
   ~UsageRewriter() override = default;
   bool Rewrite(const ConversionRequest &request,
                Segments *segments) const override;
@@ -114,6 +115,9 @@ class UsageRewriter : public RewriterInterface {
   const dictionary::DictionaryInterface *dictionary_;
   const uint32_t *base_conjugation_suffix_;
   SerializedStringArray string_array_;
+
+ private:
+  friend class UsageRewriterPeer;
 };
 
 }  // namespace mozc

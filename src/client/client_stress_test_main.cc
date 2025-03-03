@@ -43,19 +43,21 @@
 #endif  // _WIN32
 
 #include "absl/flags/flag.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "base/init_mozc.h"
-#include "base/logging.h"
 #include "base/vlog.h"
 #include "client/client.h"
+#include "protocol/commands.pb.h"
 #include "protocol/renderer_command.pb.h"
 #include "renderer/renderer_client.h"
 #include "session/random_keyevents_generator.h"
 
 // TODO(taku)
 // 1. multi-thread testing
-// 2. change/config the senario
+// 2. change/config the scenario
 
 ABSL_FLAG(int32_t, max_keyevents, 100000,
           "test at most |max_keyevents| key sequences");
@@ -66,8 +68,6 @@ ABSL_FLAG(bool, test_testsendkey, true, "test TestSendKey");
 
 int main(int argc, char **argv) {
   mozc::InitMozc(argv[0], &argc, &argv);
-
-  absl::SetFlag(&FLAGS_logtostderr, true);
 
   mozc::client::Client client;
   if (!absl::GetFlag(FLAGS_server_path).empty()) {
@@ -127,20 +127,19 @@ int main(int argc, char **argv) {
       if (absl::GetFlag(FLAGS_test_testsendkey)) {
         MOZC_VLOG(2) << "Sending to Server: " << keys[i];
         client.TestSendKey(keys[i], &output);
-        MOZC_VLOG(2) << "Output of TestSendKey: " << MOZC_LOG_PROTOBUF(output);
+        MOZC_VLOG(2) << "Output of TestSendKey: " << output;
         absl::SleepFor(absl::Milliseconds(10));
       }
 
       MOZC_VLOG(2) << "Sending to Server: " << keys[i];
       client.SendKey(keys[i], &output);
-      MOZC_VLOG(2) << "Output of SendKey: " << MOZC_LOG_PROTOBUF(output);
+      MOZC_VLOG(2) << "Output of SendKey: " << output;
 
       if (renderer_client != nullptr) {
         renderer_command.set_type(mozc::commands::RendererCommand::UPDATE);
-        renderer_command.set_visible(output.has_candidates());
+        renderer_command.set_visible(output.has_candidate_window());
         *renderer_command.mutable_output() = output;
-        MOZC_VLOG(2) << "Sending to Renderer: "
-                     << MOZC_LOG_PROTOBUF(renderer_command);
+        MOZC_VLOG(2) << "Sending to Renderer: " << renderer_command;
         renderer_client->ExecCommand(renderer_command);
       }
     }

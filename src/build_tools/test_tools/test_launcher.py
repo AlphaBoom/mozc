@@ -36,8 +36,8 @@ The usage example is as follows.
 
  Sample Code:
   launcher = TestLauncher(gtest_report_dir='/tmp/my_gtest_report_dir')
-  launcher.AddTest(['/path/to/binary/some_test', '--logtostderr' ])
-  launcher.AddTest(['/path/to/binary/another_test', '--logtostderr' ])
+  launcher.AddTest(['/path/to/binary/some_test'])
+  launcher.AddTest(['/path/to/binary/another_test'])
   ...
   launcher.Execute(8)          # Execute with specified number of processes.
                                  This function blocks main thread until all
@@ -45,7 +45,6 @@ The usage example is as follows.
 TODO(nona): Adds unit test(hard to inject mock code due to multiprocessing)
 """
 
-__author__ = "nona"
 
 import errno
 import logging

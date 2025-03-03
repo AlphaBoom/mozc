@@ -31,27 +31,31 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "absl/algorithm/container.h"
+#include "absl/log/check.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
-#include "base/logging.h"
 #include "base/util.h"
 #include "composer/composer.h"
 #include "converter/converter_interface.h"
 #include "converter/segments.h"
 #include "request/conversion_request.h"
+#include "rewriter/rewriter_interface.h"
 
 namespace mozc {
 namespace {
 
-// Checks given string is ucs4 expression or not.
-bool IsValidUcs4Expression(const absl::string_view input) {
+// Checks given string is codepoint expression or not.
+bool IsValidCodepointExpression(const absl::string_view input) {
   if (input.size() < 3 || input.size() > 8) {
     return false;
   }
@@ -64,9 +68,10 @@ bool IsValidUcs4Expression(const absl::string_view input) {
 }
 
 // Converts given string to 32bit unsigned integer.
-bool UCS4ExpressionToInteger(const absl::string_view input, uint32_t *ucs4) {
-  DCHECK(ucs4);
-  return absl::SimpleHexAtoi(input.substr(2), ucs4);
+bool UCS4ExpressionToInteger(const absl::string_view input,
+                             uint32_t *codepoint) {
+  DCHECK(codepoint);
+  return absl::SimpleHexAtoi(input.substr(2), codepoint);
 }
 
 void AddCandidate(std::string key, std::string value, int index,
@@ -99,26 +104,20 @@ void AddCandidate(std::string key, std::string value, int index,
 // triggered on reverse conversion only.
 bool UnicodeRewriter::RewriteToUnicodeCharFormat(
     const ConversionRequest &request, Segments *segments) const {
-  if (!request.has_composer()) {
-    return false;
-  }
-
   if (request.composer().source_text().empty() ||
       segments->conversion_segments_size() != 1) {
     return false;
   }
 
-  const std::string &source_text = request.composer().source_text();
+  absl::string_view source_text = request.composer().source_text();
   const size_t source_text_size = Util::CharsLen(source_text);
   if (source_text_size != 1) {
     return false;
   }
 
-  const std::string &source_char = request.composer().source_text();
-  size_t mblen = 0;
-  const char32_t ucs4 = Util::Utf8ToUcs4(
-      source_char.data(), source_char.data() + source_char.size(), &mblen);
-  std::string value = absl::StrFormat("U+%04X", ucs4);
+  absl::string_view source_char = request.composer().source_text();
+  const char32_t codepoint = Util::Utf8ToCodepoint(source_char);
+  std::string value = absl::StrFormat("U+%04X", codepoint);
 
   const std::string &key = segments->conversion_segment(0).key();
   Segment *segment = segments->mutable_conversion_segment(0);
@@ -126,51 +125,73 @@ bool UnicodeRewriter::RewriteToUnicodeCharFormat(
   return true;
 }
 
+namespace {
+std::optional<std::string> GetValue(absl::string_view key) {
+  if (!IsValidCodepointExpression(key)) {
+    return std::nullopt;
+  }
+
+  uint32_t codepoint = 0;
+  if (!UCS4ExpressionToInteger(key, &codepoint)) {
+    return std::nullopt;
+  }
+
+  if (!Util::IsAcceptableCharacterAsCandidate(codepoint)) {
+    return std::nullopt;
+  }
+
+  std::string value = Util::CodepointToUtf8(codepoint);
+  if (value.empty()) {
+    return std::nullopt;
+  }
+
+  return value;
+}
+}  // namespace
+
+std::optional<RewriterInterface::ResizeSegmentsRequest>
+UnicodeRewriter::CheckResizeSegmentsRequest(const ConversionRequest &request,
+                                            const Segments &segments) const {
+  if (segments.resized() || segments.conversion_segments_size() <= 1) {
+    // The given segments are already resized.
+    return std::nullopt;
+  }
+
+  absl::string_view key = request.key();
+  const size_t key_len = Util::CharsLen(key);
+  if (key_len > std::numeric_limits<uint8_t>::max()) {
+    return std::nullopt;
+  }
+  const uint8_t segment_size = static_cast<uint8_t>(key_len);
+
+  std::optional<std::string> value = GetValue(key);
+  if (!value.has_value()) {
+    return std::nullopt;
+  }
+
+  ResizeSegmentsRequest resize_request = {
+      .segment_index = 0,
+      .segment_sizes = {segment_size, 0, 0, 0, 0, 0, 0, 0},
+  };
+  return resize_request;
+}
+
 // If the key is in the "U+xxxx" format, the corresponding Unicode
 // character is added. (ex. "U+0041" -> "A").
 bool UnicodeRewriter::RewriteFromUnicodeCharFormat(
     const ConversionRequest &request, Segments *segments) const {
-  std::string key;
-  for (size_t i = 0; i < segments->conversion_segments_size(); ++i) {
-    key += segments->conversion_segment(i).key();
-  }
-
-  if (!IsValidUcs4Expression(key)) {
+  if (segments->conversion_segments_size() != 1) {
     return false;
   }
 
-  uint32_t ucs4 = 0;
-  if (!UCS4ExpressionToInteger(key, &ucs4)) {
+  absl::string_view key = request.key();
+  std::optional<std::string> value = GetValue(key);
+  if (!value.has_value()) {
     return false;
   }
-
-  if (!Util::IsAcceptableCharacterAsCandidate(ucs4)) {
-    return false;
-  }
-
-  std::string value;
-  Util::Ucs4ToUtf8(ucs4, &value);
-  if (value.empty()) {
-    return false;
-  }
-
-  if (segments->conversion_segments_size() > 1) {
-    if (segments->resized()) {
-      // The given segments are resized by user so don't modify anymore.
-      return false;
-    }
-
-    const uint32_t resize_len =
-        Util::CharsLen(key) -
-        Util::CharsLen(segments->conversion_segment(0).key());
-    if (!parent_converter_->ResizeSegment(segments, request, 0, resize_len)) {
-      return false;
-    }
-  }
-  DCHECK_EQ(1, segments->conversion_segments_size());
 
   Segment *segment = segments->mutable_conversion_segment(0);
-  AddCandidate(std::move(key), std::move(value), 0, segment);
+  AddCandidate(std::string(key), std::move(value.value()), 0, segment);
   return true;
 }
 

@@ -39,18 +39,19 @@
 #include <utility>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "base/file/temp_dir.h"
 #include "base/file_util.h"
-#include "base/logging.h"
 #include "base/random.h"
 #include "base/singleton.h"
 #include "config/config_handler.h"
 #include "data_manager/testing/mock_data_manager.h"
 #include "dictionary/dictionary_interface.h"
+#include "dictionary/dictionary_mock.h"
 #include "dictionary/dictionary_test_util.h"
 #include "dictionary/dictionary_token.h"
 #include "dictionary/pos_matcher.h"
@@ -64,13 +65,14 @@
 #include "testing/gmock.h"
 #include "testing/gunit.h"
 #include "testing/mozctest.h"
-#include "usage_stats/usage_stats.h"
-#include "usage_stats/usage_stats_testing_util.h"
 
 namespace mozc {
 namespace dictionary {
 namespace {
 
+using ::mozc::dictionary::DictionaryInterface;
+using ::testing::_;
+using ::testing::AnyNumber;
 using ::testing::AnyOf;
 using ::testing::Each;
 using ::testing::ElementsAre;
@@ -78,6 +80,7 @@ using ::testing::Eq;
 using ::testing::Field;
 using ::testing::IsEmpty;
 using ::testing::Not;
+using ::testing::Return;
 using ::testing::UnorderedElementsAreArray;
 
 constexpr char kUserDictionary0[] =
@@ -175,9 +178,7 @@ class UserPosMock : public UserPosInterface {
   std::vector<std::string> GetPosList() const override {
     return {{kNoun.data(), kNoun.size()}};
   }
-  int GetPosListDefaultIndex() const override {
-    return 0;
-  }
+  int GetPosListDefaultIndex() const override { return 0; }
 
   bool GetPosIds(absl::string_view pos, uint16_t *id) const override {
     return false;
@@ -191,14 +192,10 @@ class UserDictionaryTest : public testing::TestWithTempUserProfile {
  protected:
   UserDictionaryTest()
       : suppression_dictionary_(std::make_unique<SuppressionDictionary>()) {
-    convreq_.set_config(&config_);
-    mozc::usage_stats::UsageStats::ClearAllStatsForTest();
     config::ConfigHandler::GetDefaultConfig(&config_);
   }
 
   ~UserDictionaryTest() override {
-    mozc::usage_stats::UsageStats::ClearAllStatsForTest();
-
     // This config initialization will be removed once ConversionRequest can
     // take config as an injected argument.
     config::Config config;
@@ -221,6 +218,10 @@ class UserDictionaryTest : public testing::TestWithTempUserProfile {
         UserPos::CreateFromDataManager(mock_data_manager_),
         dictionary::PosMatcher(mock_data_manager_.GetPosMatcherData()),
         Singleton<SuppressionDictionary>::get());
+  }
+
+  ConversionRequest ConvReq(const config::Config &config) {
+    return ConversionRequestBuilder().SetConfig(config).Build();
   }
 
   struct Entry {
@@ -265,21 +266,24 @@ class UserDictionaryTest : public testing::TestWithTempUserProfile {
   std::vector<Entry> LookupPredictive(absl::string_view key,
                                       const UserDictionary &dic) {
     EntryCollector collector;
-    dic.LookupPredictive(key, convreq_, &collector);
+    const ConversionRequest convreq = ConvReq(config_);
+    dic.LookupPredictive(key, convreq, &collector);
     return std::move(collector).entries();
   }
 
   std::vector<Entry> LookupPrefix(absl::string_view key,
                                   const UserDictionary &dic) {
     EntryCollector collector;
-    dic.LookupPrefix(key, convreq_, &collector);
+    const ConversionRequest convreq = ConvReq(config_);
+    dic.LookupPrefix(key, convreq, &collector);
     return std::move(collector).entries();
   }
 
   std::vector<Entry> LookupExact(absl::string_view key,
                                  const UserDictionary &dic) {
     EntryCollector collector;
-    dic.LookupExact(key, convreq_, &collector);
+    const ConversionRequest convreq = ConvReq(config_);
+    dic.LookupExact(key, convreq, &collector);
     return std::move(collector).entries();
   }
 
@@ -320,18 +324,111 @@ class UserDictionaryTest : public testing::TestWithTempUserProfile {
   std::string LookupComment(const UserDictionary &dic, absl::string_view key,
                             absl::string_view value) {
     std::string comment;
-    dic.LookupComment(key, value, convreq_, &comment);
+    const ConversionRequest convreq = ConvReq(config_);
+    dic.LookupComment(key, value, convreq, &comment);
     return comment;
   }
 
   std::unique_ptr<SuppressionDictionary> suppression_dictionary_;
-  ConversionRequest convreq_;
   config::Config config_;
 
  private:
   const testing::MockDataManager mock_data_manager_;
-  usage_stats::scoped_usage_stats_enabler usage_stats_enabler_;
 };
+
+TEST_F(UserDictionaryTest, TestLookupPredictiveCallback) {
+  std::unique_ptr<UserDictionary> dic(CreateDictionaryWithMockPos());
+  // Wait for async reload called from the constructor.
+  dic->WaitForReloader();
+
+  {
+    UserDictionaryStorage storage("");
+    UserDictionaryTest::LoadFromString(kUserDictionary0, &storage);
+    dic->Load(storage.GetProto());
+  }
+
+  MockCallback mock_callback;
+  EXPECT_CALL(mock_callback, OnKey(_))
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+  EXPECT_CALL(mock_callback, OnActualKey(_, _, _))
+      .Times(AnyNumber())
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+  EXPECT_CALL(mock_callback, OnToken(_, _, _))
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+
+  EXPECT_CALL(mock_callback, OnKey(Eq("start")))
+      .Times(1)
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+  EXPECT_CALL(mock_callback, OnActualKey(Eq("start"), Eq("start"), Eq(0)))
+      .Times(1)
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+  EXPECT_CALL(mock_callback, OnToken(Eq("start"), Eq("start"), _))
+      .Times(1)
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+
+  const ConversionRequest convreq = ConvReq(config_);
+  dic->LookupPredictive("start", convreq, &mock_callback);
+}
+
+TEST_F(UserDictionaryTest, TestLookupExactCallback) {
+  std::unique_ptr<UserDictionary> dic(CreateDictionaryWithMockPos());
+  // Wait for async reload called from the constructor.
+  dic->WaitForReloader();
+
+  {
+    UserDictionaryStorage storage("");
+    UserDictionaryTest::LoadFromString(kUserDictionary0, &storage);
+    dic->Load(storage.GetProto());
+  }
+
+  MockCallback mock_callback;
+  EXPECT_CALL(mock_callback, OnKey(Eq("start")))
+      .Times(1)
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+  EXPECT_CALL(mock_callback, OnActualKey(Eq("start"), Eq("start"), Eq(0)))
+      .Times(1)
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+  EXPECT_CALL(mock_callback, OnToken(Eq("start"), Eq("start"), _))
+      .Times(1)
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+
+  const ConversionRequest convreq = ConvReq(config_);
+  dic->LookupExact("start", convreq, &mock_callback);
+}
+
+TEST_F(UserDictionaryTest, TestLookupPrefixCallback) {
+  std::unique_ptr<UserDictionary> dic(CreateDictionaryWithMockPos());
+  // Wait for async reload called from the constructor.
+  dic->WaitForReloader();
+
+  {
+    UserDictionaryStorage storage("");
+    UserDictionaryTest::LoadFromString(kUserDictionary0, &storage);
+    dic->Load(storage.GetProto());
+  }
+
+  MockCallback mock_callback;
+  EXPECT_CALL(mock_callback, OnKey(_))
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+  EXPECT_CALL(mock_callback, OnActualKey(_, _, _))
+      .Times(AnyNumber())
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+  EXPECT_CALL(mock_callback, OnToken(_, _, _))
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+
+  EXPECT_CALL(mock_callback, OnKey(Eq("start")))
+      .Times(1)
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+  EXPECT_CALL(mock_callback, OnActualKey(Eq("start"), Eq("start"), Eq(0)))
+      .Times(1)
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+  EXPECT_CALL(mock_callback, OnToken(Eq("start"), Eq("start"), _))
+      .Times(1)
+      .WillRepeatedly(Return(DictionaryInterface::Callback::TRAVERSE_CONTINUE));
+
+  const ConversionRequest convreq = ConvReq(config_);
+  dic->LookupPrefix("start", convreq, &mock_callback);
+}
 
 TEST_F(UserDictionaryTest, TestLookupPredictive) {
   std::unique_ptr<UserDictionary> dic(CreateDictionaryWithMockPos());
@@ -586,6 +683,65 @@ TEST_F(UserDictionaryTest, TestLookupWithShortCut) {
               UnorderedElementsAreArray(kExpected2));
 }
 
+TEST_F(UserDictionaryTest, TestKeyNormalization) {
+  std::unique_ptr<UserDictionary> user_dic(CreateDictionary());
+  user_dic->WaitForReloader();
+
+  // Create dictionary
+  TempDirectory temp_dir = testing::MakeTempDirectoryOrDie();
+  const std::string filename =
+      FileUtil::JoinPath(temp_dir.path(), "normalization_test.db");
+  UserDictionaryStorage storage(filename);
+  {
+    uint64_t id = 0;
+    EXPECT_TRUE(storage.CreateDictionary("normalization_test", &id));
+    UserDictionaryStorage::UserDictionary *dic =
+        storage.GetProto().mutable_dictionaries(0);
+
+    // "名詞"(NOUN)
+    // Full width will be normalized to half width.
+    UserDictionaryStorage::UserDictionaryEntry *entry = dic->add_entries();
+    entry->set_key("１％");
+    entry->set_value("１％");
+    entry->set_pos(user_dictionary::UserDictionary::NOUN);
+
+    // Half width katakana will be normalized to full width hiragana.
+    entry = dic->add_entries();
+    entry->set_key("ｸﾞｰｸﾞﾙ");
+    entry->set_value("Google");
+    entry->set_pos(user_dictionary::UserDictionary::NOUN);
+
+    // NO POS word is handled as SHORTCUT word.
+    // voiced sound mark in「う゛」 will be normalized to be 「ゔ」.
+    entry = dic->add_entries();
+    entry->set_key("う゛ぃくとりー");
+    entry->set_value("ヴィクトリー");
+    entry->set_pos(user_dictionary::UserDictionary::NO_POS);
+
+    // Katakana will be normalized to hiragana.
+    entry = dic->add_entries();
+    entry->set_key("ジーボード");
+    entry->set_value("Gboard");
+    entry->set_pos(user_dictionary::UserDictionary::NO_POS);
+
+    user_dic->Load(storage.GetProto());
+  }
+
+  EXPECT_EQ(LookupExact("1%", *user_dic).size(), 1);
+  EXPECT_EQ(LookupExact("１％", *user_dic).size(), 0);
+
+  EXPECT_EQ(LookupExact("ぐーぐる", *user_dic).size(), 1);
+  EXPECT_EQ(LookupExact("グーグル", *user_dic).size(), 0);
+  EXPECT_EQ(LookupExact("ｸﾞｰｸﾞﾙ", *user_dic).size(), 0);
+
+  EXPECT_EQ(LookupExact("ゔぃくとりー", *user_dic).size(), 1);
+  EXPECT_EQ(LookupExact("う゛ぃくとりー", *user_dic).size(), 0);
+  EXPECT_EQ(LookupExact("ヴィクトリー", *user_dic).size(), 0);
+
+  EXPECT_EQ(LookupExact("じーぼーど", *user_dic).size(), 1);
+  EXPECT_EQ(LookupExact("ジーボード", *user_dic).size(), 0);
+}
+
 TEST_F(UserDictionaryTest, IncognitoModeTest) {
   config_.set_incognito_mode(true);
   std::unique_ptr<UserDictionary> dic(CreateDictionaryWithMockPos());
@@ -647,10 +803,18 @@ TEST_F(UserDictionaryTest, AsyncLoadTest) {
       dic->Reload();
       for (int i = 0; i < 1000; ++i) {
         CollectTokenCallback callback;
-        dic->LookupPrefix(keys[i], convreq_, &callback);
+        const ConversionRequest convreq = ConvReq(config_);
+        dic->LookupPrefix(keys[i], convreq, &callback);
       }
     }
     dic->WaitForReloader();
+  }
+
+  // Fix b//341758719. Waits the reload inside the destructor.
+  {
+    std::unique_ptr<UserDictionary> dic(CreateDictionary());
+    dic->SetUserDictionaryName(filename);
+    dic->Reload();
   }
 }
 
@@ -755,65 +919,19 @@ TEST_F(UserDictionaryTest, TestSuggestionOnlyWord) {
   {
     constexpr char kKey[] = "key0123";
     CollectTokenCallback callback;
-    user_dic->LookupPrefix(kKey, convreq_, &callback);
+    const ConversionRequest convreq = ConvReq(config_);
+    user_dic->LookupPrefix(kKey, convreq, &callback);
     EXPECT_THAT(callback.tokens(), Each(Field(&Token::value, Eq("default"))));
   }
   {
     constexpr char kKey[] = "key";
     CollectTokenCallback callback;
-    user_dic->LookupPredictive(kKey, convreq_, &callback);
+    const ConversionRequest convreq = ConvReq(config_);
+    user_dic->LookupPredictive(kKey, convreq, &callback);
     EXPECT_THAT(
         callback.tokens(),
         Each(Field(&Token::value, AnyOf(Eq("suggest_only"), Eq("default")))));
   }
-}
-
-TEST_F(UserDictionaryTest, TestUsageStats) {
-  std::unique_ptr<UserDictionary> dic(CreateDictionaryWithMockPos());
-  // Wait for async reload called from the constructor.
-  dic->WaitForReloader();
-  UserDictionaryStorage storage("");
-
-  {
-    UserDictionaryStorage::UserDictionary *dic1 =
-        storage.GetProto().add_dictionaries();
-    CHECK(dic1);
-    UserDictionaryStorage::UserDictionaryEntry *entry;
-    entry = dic1->add_entries();
-    CHECK(entry);
-    entry->set_key("key1");
-    entry->set_value("value1");
-    entry->set_pos(user_dictionary::UserDictionary::NOUN);
-    entry = dic1->add_entries();
-    CHECK(entry);
-    entry->set_key("key2");
-    entry->set_value("value2");
-    entry->set_pos(user_dictionary::UserDictionary::NOUN);
-  }
-  {
-    UserDictionaryStorage::UserDictionary *dic2 =
-        storage.GetProto().add_dictionaries();
-    CHECK(dic2);
-    UserDictionaryStorage::UserDictionaryEntry *entry;
-    entry = dic2->add_entries();
-    CHECK(entry);
-    entry->set_key("key3");
-    entry->set_value("value3");
-    entry->set_pos(user_dictionary::UserDictionary::NOUN);
-    entry = dic2->add_entries();
-    CHECK(entry);
-    entry->set_key("key4");
-    entry->set_value("value4");
-    entry->set_pos(user_dictionary::UserDictionary::NOUN);
-    entry = dic2->add_entries();
-    CHECK(entry);
-    entry->set_key("key5");
-    entry->set_value("value5");
-    entry->set_pos(user_dictionary::UserDictionary::NOUN);
-  }
-  dic->Load(storage.GetProto());
-
-  EXPECT_INTEGER_STATS("UserRegisteredWord", 5);
 }
 
 TEST_F(UserDictionaryTest, LookupComment) {
@@ -830,24 +948,25 @@ TEST_F(UserDictionaryTest, LookupComment) {
   // Entry is in user dictionary but has no comment.
   std::string comment;
   comment = "prev comment";
+  const ConversionRequest convreq = ConvReq(config_);
   EXPECT_FALSE(
-      dic->LookupComment("comment_key1", "comment_value2", convreq_, &comment));
+      dic->LookupComment("comment_key1", "comment_value2", convreq, &comment));
   EXPECT_EQ(comment, "prev comment");
 
   // Usual case: single key-value pair with comment.
   EXPECT_TRUE(
-      dic->LookupComment("comment_key2", "comment_value2", convreq_, &comment));
+      dic->LookupComment("comment_key2", "comment_value2", convreq, &comment));
   EXPECT_EQ(comment, "comment");
 
   // There exist two entries having the same key, value and POS.  Since POS is
   // irrelevant to comment lookup, the first nonempty comment should be found.
   EXPECT_TRUE(
-      dic->LookupComment("comment_key3", "comment_value3", convreq_, &comment));
+      dic->LookupComment("comment_key3", "comment_value3", convreq, &comment));
   EXPECT_EQ(comment, "comment1");
 
   // White-space only comments should be cleared.
   EXPECT_FALSE(
-      dic->LookupComment("comment_key4", "comment_value4", convreq_, &comment));
+      dic->LookupComment("comment_key4", "comment_value4", convreq, &comment));
   // The previous comment should remain.
   EXPECT_EQ(comment, "comment1");
 

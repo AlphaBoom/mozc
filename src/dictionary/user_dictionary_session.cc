@@ -39,11 +39,13 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/optimization.h"
 #include "absl/container/fixed_array.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/strings/string_view.h"
-#include "base/logging.h"
-#include "base/protobuf/protobuf.h"
-#include "base/protobuf/repeated_field.h"
+#include "base/protobuf/repeated_ptr_field.h"
 #include "base/strings/assign.h"
 #include "dictionary/user_dictionary_importer.h"
 #include "dictionary/user_dictionary_storage.h"
@@ -409,7 +411,7 @@ UserDictionaryCommandStatus::Status UserDictionarySession::Save() {
       default:
         return UserDictionaryCommandStatus::UNKNOWN_ERROR;
     }
-    // Should never reach here.
+    ABSL_UNREACHABLE();
   }
 
   return UserDictionaryCommandStatus::USER_DICTIONARY_COMMAND_SUCCESS;
@@ -505,7 +507,7 @@ UserDictionaryCommandStatus::Status UserDictionarySession::RenameDictionary(
         LOG(ERROR) << "Unknown error code: " << storage_->GetLastError();
         return UserDictionaryCommandStatus::UNKNOWN_ERROR;
     }
-    // Should never reach here.
+    ABSL_UNREACHABLE();
   }
 
   AddUndoCommand(std::make_unique<UndoRenameDictionaryCommand>(dictionary_id,

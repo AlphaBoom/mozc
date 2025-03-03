@@ -29,13 +29,15 @@
 
 #include "dictionary/system/codec.h"
 
+#include <cstddef>
 #include <cstdint>
-#include <sstream>
 #include <string>
 #include <vector>
 
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/strings/string_view.h"
-#include "base/logging.h"
+#include "absl/types/span.h"
 #include "base/singleton.h"
 #include "base/util.h"
 #include "base/vlog.h"
@@ -49,7 +51,7 @@ namespace {
 void EncodeDecodeKeyImpl(absl::string_view src, std::string *dst);
 size_t GetEncodedDecodedKeyLengthImpl(absl::string_view src);
 
-uint8_t GetFlagsForToken(const std::vector<TokenInfo> &tokens, int index);
+uint8_t GetFlagsForToken(absl::Span<const TokenInfo> tokens, int index);
 
 uint8_t GetFlagForPos(const TokenInfo &token_info, const Token *token);
 
@@ -106,10 +108,10 @@ constexpr uint8_t kValueCharMarkOtherUcs2 = 0xfe;
 // UCS4 characters never exceed 10FFFF. (three 8bits, A-B-C).
 // For left most 8bits A, we will use upper 2bits for the flag
 // that indicating whether B and C is 0 or not.
-constexpr uint8_t kValueCharMarkUcs4 = 0xff;
-constexpr uint8_t kValueCharMarkUcs4Middle0 = 0x80;
-constexpr uint8_t kValueCharMarkUcs4Right0 = 0x40;
-constexpr uint8_t kValueCharMarkUcs4LeftMask = 0x1f;
+constexpr uint8_t kValueCharMarkCodepoint = 0xff;
+constexpr uint8_t kValueCharMarkCodepointMiddle0 = 0x80;
+constexpr uint8_t kValueCharMarkCodepointRight0 = 0x40;
+constexpr uint8_t kValueCharMarkCodepointLeftMask = 0x1f;
 
 // character code related constants
 constexpr int kValueKanjiOffset = 0x01;
@@ -280,12 +282,12 @@ void SystemDictionaryCodec::EncodeValue(const absl::string_view src,
       const int middle = ((c >> 8) & 255);
       const int right = (c & 255);
       if (middle == 0) {
-        left |= kValueCharMarkUcs4Middle0;
+        left |= kValueCharMarkCodepointMiddle0;
       }
       if (right == 0) {
-        left |= kValueCharMarkUcs4Right0;
+        left |= kValueCharMarkCodepointRight0;
       }
-      dst->push_back(kValueCharMarkUcs4);
+      dst->push_back(kValueCharMarkCodepoint);
       dst->push_back(left);
       if (middle != 0) {
         dst->push_back(middle);
@@ -327,14 +329,14 @@ void SystemDictionaryCodec::DecodeValue(const absl::string_view src,
       // xx00
       c = (p[1] << 8);
       p += 2;
-    } else if (cc == kValueCharMarkUcs4) {
+    } else if (cc == kValueCharMarkCodepoint) {
       // UCS4
-      c = ((p[1] & kValueCharMarkUcs4LeftMask) << 16);
+      c = ((p[1] & kValueCharMarkCodepointLeftMask) << 16);
       int pos = 2;
-      if (!(p[1] & kValueCharMarkUcs4Middle0)) {
+      if (!(p[1] & kValueCharMarkCodepointMiddle0)) {
         c += (p[pos++] << 8);
       }
-      if (!(p[1] & kValueCharMarkUcs4Right0)) {
+      if (!(p[1] & kValueCharMarkCodepointRight0)) {
         c += p[pos++];
       }
       p += pos;
@@ -351,7 +353,7 @@ void SystemDictionaryCodec::DecodeValue(const absl::string_view src,
     } else {
       MOZC_VLOG(1) << "should never come here";
     }
-    Util::Ucs4ToUtf8Append(c, dst);
+    Util::CodepointToUtf8Append(c, dst);
   }
 }
 
@@ -359,7 +361,7 @@ uint8_t SystemDictionaryCodec::GetTokensTerminationFlag() const {
   return kTokenTerminationFlag;
 }
 
-void SystemDictionaryCodec::EncodeTokens(const std::vector<TokenInfo> &tokens,
+void SystemDictionaryCodec::EncodeTokens(absl::Span<const TokenInfo> tokens,
                                          std::string *output) const {
   DCHECK(output);
   output->clear();
@@ -384,7 +386,7 @@ void SystemDictionaryCodec::EncodeTokens(const std::vector<TokenInfo> &tokens,
 // Index: (less than 2^22)
 //  When kCrammedIDFlag is set, 2 bytes
 //  Othewise, 3 bytes
-void SystemDictionaryCodec::EncodeToken(const std::vector<TokenInfo> &tokens,
+void SystemDictionaryCodec::EncodeToken(absl::Span<const TokenInfo> tokens,
                                         int index, std::string *output) const {
   CHECK_LT(index, tokens.size());
 
@@ -507,7 +509,7 @@ void EncodeDecodeKeyImpl(const absl::string_view src, std::string *dst) {
       code -= offset;
     }
     DCHECK_GT(code, 0);
-    Util::Ucs4ToUtf8Append(code, dst);
+    Util::CodepointToUtf8Append(code, dst);
   }
 }
 
@@ -536,7 +538,7 @@ size_t GetEncodedDecodedKeyLengthImpl(const absl::string_view src) {
 }
 
 // Return flags for token
-uint8_t GetFlagsForToken(const std::vector<TokenInfo> &tokens, int index) {
+uint8_t GetFlagsForToken(absl::Span<const TokenInfo> tokens, int index) {
   // Determines the flags for this token.
   uint8_t flags = 0;
   if (index == tokens.size() - 1) {

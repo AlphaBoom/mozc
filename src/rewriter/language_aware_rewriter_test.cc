@@ -29,6 +29,8 @@
 
 #include "rewriter/language_aware_rewriter.h"
 
+#include <cstddef>
+#include <memory>
 #include <string>
 
 #include "absl/strings/string_view.h"
@@ -42,10 +44,10 @@
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 #include "request/conversion_request.h"
+#include "rewriter/rewriter_interface.h"
+#include "testing/gmock.h"
 #include "testing/gunit.h"
 #include "testing/mozctest.h"
-#include "usage_stats/usage_stats.h"
-#include "usage_stats/usage_stats_testing_util.h"
 
 namespace mozc {
 namespace {
@@ -71,10 +73,6 @@ void InsertASCIISequence(const absl::string_view text,
 
 class LanguageAwareRewriterTest : public testing::TestWithTempUserProfile {
  protected:
-  void SetUp() override { usage_stats::UsageStats::ClearAllStatsForTest(); }
-
-  void TearDown() override { usage_stats::UsageStats::ClearAllStatsForTest(); }
-
   bool RewriteWithLanguageAwareInput(const LanguageAwareRewriter *rewriter,
                                      const absl::string_view key,
                                      bool is_mobile, std::string *composition,
@@ -88,14 +86,13 @@ class LanguageAwareRewriterTest : public testing::TestWithTempUserProfile {
       client_request.set_mixed_conversion(true);
     }
 
-    composer::Table table;
+    auto table = std::make_shared<composer::Table>();
     config::Config default_config;
-    table.InitializeWithRequestAndConfig(client_request, default_config,
-                                         data_manager_);
+    table->InitializeWithRequestAndConfig(client_request, default_config);
 
-    composer::Composer composer(&table, &client_request, &default_config);
+    composer::Composer composer(table, client_request, default_config);
     InsertASCIISequence(key, &composer);
-    composer.GetStringForPreedit(composition);
+    *composition = composer.GetStringForPreedit();
 
     // Perform the rewrite command.
     if (segments->conversion_segments_size() == 0) {
@@ -103,14 +100,16 @@ class LanguageAwareRewriterTest : public testing::TestWithTempUserProfile {
     }
     Segment *segment = segments->mutable_conversion_segment(0);
     segment->set_key(*composition);
-    ConversionRequest request(&composer, &client_request, &default_config);
-
-    request.set_request_type(ConversionRequest::SUGGESTION);
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequest(client_request)
+            .SetRequestType(ConversionRequest::SUGGESTION)
+            .Build();
 
     return rewriter->Rewrite(request, segments);
   }
 
-  usage_stats::scoped_usage_stats_enabler usage_stats_enabler_;
   const testing::MockDataManager data_manager_;
 };
 
@@ -149,7 +148,7 @@ constexpr auto IsLangAwareCandidate =
 TEST_F(LanguageAwareRewriterTest, LanguageAwareInput) {
   MockDictionary dictionary;
   LanguageAwareRewriter rewriter(PosMatcher(data_manager_.GetPosMatcherData()),
-                                 &dictionary);
+                                 dictionary);
   {
     // "python" is composed to "ｐｙてょｎ", but "python" should be suggested,
     // because alphabet characters are in the middle of the word.
@@ -296,73 +295,10 @@ TEST_F(LanguageAwareRewriterTest, LanguageAwareInput) {
   }
 }
 
-TEST_F(LanguageAwareRewriterTest, LanguageAwareInputUsageStats) {
-  MockDictionary dictionary;
-  LanguageAwareRewriter rewriter(PosMatcher(data_manager_.GetPosMatcherData()),
-                                 &dictionary);
-
-  EXPECT_STATS_NOT_EXIST("LanguageAwareSuggestionTriggered");
-  EXPECT_STATS_NOT_EXIST("LanguageAwareSuggestionCommitted");
-
-  const std::string kPyTeyoN = "ｐｙてょｎ";
-
-  {
-    // "python" is composed to "ｐｙてょｎ", but "python" should be suggested,
-    // because alphabet characters are in the middle of the word.
-    std::string composition;
-    Segments segments;
-    EXPECT_TRUE(RewriteWithLanguageAwareInput(
-        &rewriter, "python", false, /* is_mobile */ &composition, &segments));
-    EXPECT_EQ(composition, kPyTeyoN);
-    ASSERT_EQ(1, segments.conversion_segments_size());
-    EXPECT_THAT(segments.conversion_segment(0),
-                HasSingleCandidate(IsLangAwareCandidate("python")));
-    EXPECT_COUNT_STATS("LanguageAwareSuggestionTriggered", 1);
-    EXPECT_STATS_NOT_EXIST("LanguageAwareSuggestionCommitted");
-    Mock::VerifyAndClearExpectations(&dictionary);
-  }
-  {
-    // Call Rewrite with "python" again, then call Finish.  Both ...Triggered
-    // and ...Committed should be incremented.
-    // Note, RewriteWithLanguageAwareInput is not used here, because
-    // Finish also requires ConversionRequest.
-    commands::Request client_request;
-    client_request.set_language_aware_input(
-        commands::Request::LANGUAGE_AWARE_SUGGESTION);
-
-    composer::Table table;
-    config::Config default_config;
-    table.InitializeWithRequestAndConfig(client_request, default_config,
-                                         data_manager_);
-
-    std::string composition;
-    composer::Composer composer(&table, &client_request, &default_config);
-    InsertASCIISequence("python", &composer);
-    composer.GetStringForPreedit(&composition);
-    EXPECT_EQ(composition, kPyTeyoN);
-
-    // Perform the rewrite command.
-    Segments segments;
-    Segment *segment = segments.add_segment();
-    segment->set_key(composition);
-    ConversionRequest request(&composer, &client_request, &default_config);
-    request.set_request_type(ConversionRequest::SUGGESTION);
-
-    EXPECT_TRUE(rewriter.Rewrite(request, &segments));
-
-    EXPECT_COUNT_STATS("LanguageAwareSuggestionTriggered", 2);
-
-    segment->set_segment_type(Segment::FIXED_VALUE);
-    EXPECT_LT(0, segment->candidates_size());
-    rewriter.Finish(request, &segments);
-    EXPECT_COUNT_STATS("LanguageAwareSuggestionCommitted", 1);
-  }
-}
-
 TEST_F(LanguageAwareRewriterTest, NotRewriteFullWidthAsciiToHalfWidthAscii) {
   MockDictionary dictionary;
   LanguageAwareRewriter rewriter(PosMatcher(data_manager_.GetPosMatcherData()),
-                                 &dictionary);
+                                 dictionary);
   {
     // "1d*=" is composed to "１ｄ＊＝", which are the full width ascii
     // characters of "1d*=". We do not want to rewrite full width ascii to
@@ -407,7 +343,7 @@ TEST_F(LanguageAwareRewriterTest, IsDisabledInTwelveKeyLayout) {
 
   MockDictionary dictionary;
   LanguageAwareRewriter rewriter(PosMatcher(data_manager_.GetPosMatcherData()),
-                                 &dictionary);
+                                 dictionary);
   for (const auto &param : kParams) {
     commands::Request request;
     request.set_language_aware_input(
@@ -417,13 +353,15 @@ TEST_F(LanguageAwareRewriterTest, IsDisabledInTwelveKeyLayout) {
     config::Config config;
     config.set_preedit_method(param.preedit_method);
 
-    composer::Table table;
-    table.InitializeWithRequestAndConfig(request, config, data_manager_);
+    auto table = std::make_shared<composer::Table>();
+    table->InitializeWithRequestAndConfig(request, config);
 
-    composer::Composer composer(&table, &request, &config);
+    composer::Composer composer(table, request, config);
     InsertASCIISequence("query", &composer);
 
-    ConversionRequest conv_request(&composer, &request, &config);
+    const commands::Context context;
+    const ConversionRequest conv_request(composer, request, context, config,
+                                         {});
     EXPECT_EQ(rewriter.capability(conv_request), param.type);
   }
 }

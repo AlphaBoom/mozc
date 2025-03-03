@@ -41,6 +41,8 @@
 
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/ascii.h"
@@ -50,7 +52,6 @@
 #include "absl/synchronization/mutex.h"
 #include "base/file_util.h"
 #include "base/hash.h"
-#include "base/logging.h"
 #include "base/singleton.h"
 #include "base/strings/assign.h"
 #include "base/strings/japanese.h"
@@ -68,7 +69,6 @@
 #include "protocol/config.pb.h"
 #include "protocol/user_dictionary_storage.pb.h"
 #include "request/conversion_request.h"
-#include "usage_stats/usage_stats.h"
 
 namespace mozc {
 namespace dictionary {
@@ -201,7 +201,7 @@ class UserDictionary::TokensIndex {
           // "品詞なし"
           const absl::string_view comment =
               absl::StripAsciiWhitespace(entry.comment());
-          UserPos::Token token{.key = entry.key(),
+          UserPos::Token token{.key = reading,
                                .value = entry.value(),
                                .id = 0,
                                .attributes = UserPos::Token::SHORTCUT,
@@ -237,9 +237,6 @@ class UserDictionary::TokensIndex {
               OrderByKeyThenById());
 
     MOZC_VLOG(1) << user_pos_tokens_.size() << " user dic entries loaded";
-
-    usage_stats::UsageStats::SetInteger(
-        "UserRegisteredWord", static_cast<int>(user_pos_tokens_.size()));
   }
 
  private:
@@ -258,7 +255,7 @@ class UserDictionary::UserDictionaryReloader {
   UserDictionaryReloader(const UserDictionaryReloader &) = delete;
   UserDictionaryReloader &operator=(const UserDictionaryReloader &) = delete;
 
-  ~UserDictionaryReloader() = default;
+  ~UserDictionaryReloader() { Wait(); }
 
   // When the user dictionary exists AND the modification time has been updated,
   // reloads the dictionary.  Returns true when reloader thread is started.
@@ -341,7 +338,7 @@ UserDictionary::UserDictionary(std::unique_ptr<const UserPosInterface> user_pos,
   Reload();
 }
 
-UserDictionary::~UserDictionary() = default;
+UserDictionary::~UserDictionary() { WaitForReloader(); }
 
 bool UserDictionary::HasKey(absl::string_view key) const {
   // TODO(noriyukit): Currently, we don't support HasKey() for user dictionary
@@ -370,7 +367,7 @@ void UserDictionary::LookupPredictive(
   if (tokens_->empty()) {
     return;
   }
-  if (conversion_request.config().incognito_mode()) {
+  if (conversion_request.incognito_mode()) {
     return;
   }
 
@@ -388,6 +385,12 @@ void UserDictionary::LookupPredictive(
         continue;
       default:
         break;
+    }
+    // b/333613472: Make sure not to set the additional penalties.
+    if (callback->OnActualKey(user_pos_token.key, user_pos_token.key,
+                              /* num_expanded= */ 0) ==
+        Callback::TRAVERSE_DONE) {
+      return;
     }
     PopulateTokenFromUserPosToken(user_pos_token, PREDICTIVE, &token);
     if (callback->OnToken(user_pos_token.key, user_pos_token.key, token) ==
@@ -410,7 +413,7 @@ void UserDictionary::LookupPrefix(absl::string_view key,
   if (tokens_->empty()) {
     return;
   }
-  if (conversion_request.config().incognito_mode()) {
+  if (conversion_request.incognito_mode()) {
     return;
   }
 
@@ -441,6 +444,11 @@ void UserDictionary::LookupPrefix(absl::string_view key,
       default:
         break;
     }
+    if (callback->OnActualKey(user_pos_token.key, user_pos_token.key,
+                              /* num_expanded= */ 0) ==
+        Callback::TRAVERSE_DONE) {
+      return;
+    }
     PopulateTokenFromUserPosToken(user_pos_token, PREFIX, &token);
     switch (callback->OnToken(user_pos_token.key, user_pos_token.key, token)) {
       case Callback::TRAVERSE_DONE:
@@ -458,8 +466,7 @@ void UserDictionary::LookupExact(absl::string_view key,
                                  const ConversionRequest &conversion_request,
                                  Callback *callback) const {
   absl::ReaderMutexLock l(&mutex_);
-  if (key.empty() || tokens_->empty() ||
-      conversion_request.config().incognito_mode()) {
+  if (key.empty() || tokens_->empty() || conversion_request.incognito_mode()) {
     return;
   }
   auto [begin, end] =
@@ -468,6 +475,10 @@ void UserDictionary::LookupExact(absl::string_view key,
     return;
   }
   if (callback->OnKey(key) != Callback::TRAVERSE_CONTINUE) {
+    return;
+  }
+  if (callback->OnActualKey(key, key, /* num_expanded= */ 0) !=
+      Callback::TRAVERSE_CONTINUE) {
     return;
   }
 
@@ -492,7 +503,7 @@ bool UserDictionary::LookupComment(absl::string_view key,
                                    absl::string_view value,
                                    const ConversionRequest &conversion_request,
                                    std::string *comment) const {
-  if (key.empty() || conversion_request.config().incognito_mode()) {
+  if (key.empty() || conversion_request.incognito_mode()) {
     return false;
   }
 
@@ -552,7 +563,7 @@ void UserDictionary::WaitForReloader() { reloader_->Wait(); }
 void UserDictionary::Swap(std::unique_ptr<TokensIndex> new_tokens) {
   DCHECK(new_tokens);
   absl::WriterMutexLock l(&mutex_);
-  tokens_.swap(new_tokens);
+  tokens_ = std::move(new_tokens);
 }
 
 bool UserDictionary::Load(

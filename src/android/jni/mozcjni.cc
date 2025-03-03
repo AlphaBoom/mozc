@@ -29,34 +29,33 @@
 
 // JNI wrapper for SessionHandler.
 
+#include <utility>
 #ifdef __ANDROID__
 
 #include <jni.h>
 
 #include <memory>
 
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/random/random.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "base/logging.h"
 #include "base/singleton.h"
 #include "base/system_util.h"
 #include "base/util.h"
 #include "data_manager/data_manager.h"
 #include "engine/engine.h"
-#include "engine/engine_builder.h"
-#include "engine/minimal_engine.h"
 #include "protocol/commands.pb.h"
 #include "session/session_handler.h"
-#include "session/session_usage_observer.h"
 
 namespace mozc {
 namespace jni {
 namespace {
 
 // The global instance of Mozc system to be initialized in onPostLoad().
-std::unique_ptr<SessionHandlerInterface> g_session_handler;
+std::unique_ptr<SessionHandler> g_session_handler;
 
 // Concrete implementation for MozcJni.evalCommand
 jbyteArray JNICALL evalCommand(JNIEnv *env, jclass clazz,
@@ -100,7 +99,7 @@ std::unique_ptr<EngineInterface> CreateMobileEngine(
     LOG(ERROR)
         << "Fallback to minimal engine due to data manager creation failure: "
         << data_manager.status();
-    return std::make_unique<MinimalEngine>();
+    return Engine::CreateEngine();
   }
   // NOTE: we need to copy the data version to our local string before calling
   // `Engine::CreateMobileEngine` because, if the engine creation below fails,
@@ -114,15 +113,15 @@ std::unique_ptr<EngineInterface> CreateMobileEngine(
     LOG(ERROR) << "Failed to create a mobile engine: file " << data_file_path
                << ", data version: " << data_version << ": " << engine.status()
                << ": Fallback to minimal engine";
-    return std::make_unique<MinimalEngine>();
+    return Engine::CreateEngine();
   }
   LOG(INFO) << "Successfully created a mobile engine from " << data_file_path
             << ", data version=" << data_version;
   return *std::move(engine);
 }
 
-std::unique_ptr<SessionHandlerInterface> CreateSessionHandler(
-    JNIEnv *env, jstring j_data_file_path) {
+std::unique_ptr<SessionHandler> CreateSessionHandler(JNIEnv *env,
+                                                     jstring j_data_file_path) {
   if (env == nullptr) {
     LOG(DFATAL) << "JNIEnv is null";
     return nullptr;
@@ -130,17 +129,14 @@ std::unique_ptr<SessionHandlerInterface> CreateSessionHandler(
   std::unique_ptr<EngineInterface> engine;
   if (j_data_file_path == nullptr) {
     LOG(ERROR) << "j_data_file_path is null.  Fallback to minimal engine.";
-    engine = std::make_unique<MinimalEngine>();
+    engine = Engine::CreateEngine();
   } else {
     const std::string &data_file_path =
         JstringToCcString(env, j_data_file_path);
     engine = CreateMobileEngine(data_file_path);
   }
   DCHECK(engine);
-  auto result = std::make_unique<SessionHandler>(
-      std::move(engine), std::make_unique<EngineBuilder>());
-  result->AddObserver(Singleton<session::SessionUsageObserver>::get());
-  return result;
+  return std::make_unique<SessionHandler>(std::move(engine));
 }
 
 // Does post-load tasks.
@@ -204,7 +200,6 @@ Java_com_google_android_apps_inputmethod_libs_mozc_session_MozcJNI_initialize(
     return false;
   }
 
-  mozc::Logging::InitLogStream("");  // Android doesn't stream log to a file.
   return true;
 }
 

@@ -33,12 +33,13 @@
 #include <cstring>
 #include <string>
 
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
 #include "base/const.h"
 #include "base/environ.h"
 #include "base/file_util.h"
-#include "base/logging.h"
 #include "base/singleton.h"
 
 #ifdef __ANDROID__
@@ -286,8 +287,8 @@ std::string UserProfileDirectoryImpl::GetUserProfileDirectory() const {
   // 3. Otherwise
   //    use "$HOME/.config/mozc" as the default value of $XDG_CONFIG_HOME
   // https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
-  const char *home = Environ::GetEnv("HOME");
-  if (home == nullptr) {
+  const std::string home = Environ::GetEnv("HOME");
+  if (home.empty()) {
     char buf[1024];
     struct passwd pw, *ppw;
     const uid_t uid = geteuid();
@@ -298,13 +299,13 @@ std::string UserProfileDirectoryImpl::GetUserProfileDirectory() const {
     return FileUtil::JoinPath(pw.pw_dir, ".mozc");
   }
 
-  const std::string old_dir = FileUtil::JoinPath(home, ".mozc");
+  std::string old_dir = FileUtil::JoinPath(home, ".mozc");
   if (FileUtil::DirectoryExists(old_dir).ok()) {
     return old_dir;
   }
 
-  const char *xdg_config_home = Environ::GetEnv("XDG_CONFIG_HOME");
-  if (xdg_config_home) {
+  const std::string xdg_config_home = Environ::GetEnv("XDG_CONFIG_HOME");
+  if (!xdg_config_home.empty()) {
     return FileUtil::JoinPath(xdg_config_home, "mozc");
   }
   return FileUtil::JoinPath(home, ".config/mozc");
@@ -359,8 +360,8 @@ class ProgramFilesX86Cache {
   // Since Mozc uses /EHs option in common.gypi, we must admit potential
   // memory leakes when any non-C++ exception occues in TryProgramFilesPath.
   // See http://msdn.microsoft.com/en-us/library/1deeycx5.aspx
-  static HRESULT __declspec(nothrow)
-      SafeTryProgramFilesPath(std::string *path) {
+  static HRESULT __declspec(nothrow) SafeTryProgramFilesPath(
+      std::string *path) {
     __try {
       return TryProgramFilesPath(path);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -375,24 +376,12 @@ class ProgramFilesX86Cache {
     path->clear();
 
     wchar_t program_files_path_buffer[MAX_PATH] = {};
-#if defined(_M_X64)
-    // In 64-bit processes (such as Text Input Prosessor DLL for 64-bit apps),
-    // CSIDL_PROGRAM_FILES points 64-bit Program Files directory. In this case,
-    // we should use CSIDL_PROGRAM_FILESX86 to find server, renderer, and other
-    // binaries' path.
+    // For historical reasons Mozc executables have been installed under
+    // %ProgramFiles(x86)%.
+    // TODO(https://github.com/google/mozc/issues/1086): Stop using "(x86)".
     const HRESULT result =
         ::SHGetFolderPathW(nullptr, CSIDL_PROGRAM_FILESX86, nullptr,
                            SHGFP_TYPE_CURRENT, program_files_path_buffer);
-#elif defined(_M_IX86)
-    // In 32-bit processes (such as server, renderer, and other binaries),
-    // CSIDL_PROGRAM_FILES always points 32-bit Program Files directory
-    // even if they are running in 64-bit Windows.
-    const HRESULT result =
-        ::SHGetFolderPathW(nullptr, CSIDL_PROGRAM_FILES, nullptr,
-                           SHGFP_TYPE_CURRENT, program_files_path_buffer);
-#else  // !_M_X64 && !_M_IX86
-#error "Unsupported CPU architecture"
-#endif  // _M_X64, _M_IX86, and others
     if (FAILED(result)) {
       return result;
     }
@@ -408,11 +397,48 @@ class ProgramFilesX86Cache {
   HRESULT result_;
   std::string path_;
 };
+
+constexpr wchar_t kMozcTipClsid[] =
+    L"SOFTWARE\\Classes\\CLSID\\"
+#ifdef GOOGLE_JAPANESE_INPUT_BUILD
+    L"{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}"
+#else   // GOOGLE_JAPANESE_INPUT_BUILD
+    L"{10A67BC8-22FA-4A59-90DC-2546652C56BF}"
+#endif  // GOOGLE_JAPANESE_INPUT_BUILD
+    L"\\InprocServer32";
+
+std::string GetMozcInstallDirFromRegistry() {
+  // TSF requires the path of "mozc_tip64.dll" to be registered in the registry,
+  // which tells us Mozc's installation directory.
+  HKEY key = nullptr;
+  LSTATUS result =::RegOpenKeyExW(
+      HKEY_LOCAL_MACHINE, kMozcTipClsid, 0, KEY_READ | KEY_WOW64_64KEY, &key);
+  if (result != ERROR_SUCCESS) {
+    return "";
+  }
+
+  DWORD type = 0;
+  wchar_t buffer[MAX_PATH] = {};
+  DWORD buffer_size = sizeof(buffer);
+  result = ::RegQueryValueExW(
+      key, nullptr, nullptr, &type, reinterpret_cast<LPBYTE>(buffer),
+      &buffer_size);
+  ::RegCloseKey(key);
+  if (result != ERROR_SUCCESS || type != REG_SZ) {
+    return "";
+  }
+  return FileUtil::Dirname(win32::WideToUtf8(buffer));
+}
+
 }  // namespace
 #endif  // _WIN32
 
 std::string SystemUtil::GetServerDirectory() {
 #ifdef _WIN32
+  const std::string install_dir_from_registry = GetMozcInstallDirFromRegistry();
+  if (!install_dir_from_registry.empty()) {
+    return install_dir_from_registry;
+  }
   DCHECK(SUCCEEDED(Singleton<ProgramFilesX86Cache>::get()->result()));
 #if defined(GOOGLE_JAPANESE_INPUT_BUILD)
   return FileUtil::JoinPath(
@@ -662,11 +688,7 @@ std::string GetSessionIdString() {
 
 std::string SystemUtil::GetDesktopNameAsString() {
 #if defined(__linux__) || defined(__wasm__)
-  const char *display = Environ::GetEnv("DISPLAY");
-  if (display == nullptr) {
-    return "";
-  }
-  return display;
+  return Environ::GetEnv("DISPLAY");
 #endif  // __linux__ || __wasm__
 
 #if defined(__APPLE__)
@@ -735,77 +757,10 @@ bool SystemUtil::EnsureVitalImmutableDataIsAvailable() {
   }
   return true;
 }
-#endif  // _WIN32
 
-namespace {
-volatile mozc::SystemUtil::IsWindowsX64Mode g_is_windows_x64_mode =
-    mozc::SystemUtil::IS_WINDOWS_X64_DEFAULT_MODE;
-}  // namespace
-
-bool SystemUtil::IsWindowsX64() {
-  switch (g_is_windows_x64_mode) {
-    case IS_WINDOWS_X64_EMULATE_32BIT_MACHINE:
-      return false;
-    case IS_WINDOWS_X64_EMULATE_64BIT_MACHINE:
-      return true;
-    case IS_WINDOWS_X64_DEFAULT_MODE:
-      // handled below.
-      break;
-    default:
-      // Should never reach here.
-      DLOG(FATAL) << "Unexpected mode specified.  mode = "
-                  << g_is_windows_x64_mode;
-      // handled below.
-      break;
-  }
-
-#ifdef _WIN32
-  SYSTEM_INFO system_info = {};
-  // This function never fails.
-  ::GetNativeSystemInfo(&system_info);
-  return (system_info.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64);
-#else   // _WIN32
-  return false;
-#endif  // _WIN32
-}
-
-void SystemUtil::SetIsWindowsX64ModeForTest(IsWindowsX64Mode mode) {
-  g_is_windows_x64_mode = mode;
-  switch (g_is_windows_x64_mode) {
-    case IS_WINDOWS_X64_EMULATE_32BIT_MACHINE:
-    case IS_WINDOWS_X64_EMULATE_64BIT_MACHINE:
-    case IS_WINDOWS_X64_DEFAULT_MODE:
-      // Known mode. OK.
-      break;
-    default:
-      DLOG(FATAL) << "Unexpected mode specified.  mode = "
-                  << g_is_windows_x64_mode;
-      break;
-  }
-}
-
-#ifdef _WIN32
 const wchar_t *SystemUtil::GetSystemDir() {
   DCHECK(Singleton<SystemDirectoryCache>::get()->succeeded());
   return Singleton<SystemDirectoryCache>::get()->system_dir();
-}
-
-std::string SystemUtil::GetMSCTFAsmCacheReadyEventName() {
-  const std::string &session_id = GetSessionIdString();
-  if (session_id.empty()) {
-    DLOG(ERROR) << "Failed to retrieve session id";
-    return "";
-  }
-
-  const std::string &desktop_name = GetInputDesktopName();
-
-  if (desktop_name.empty()) {
-    DLOG(ERROR) << "Failed to retrieve desktop name";
-    return "";
-  }
-
-  // Compose "Local\MSCTF.AsmCacheReady.<desktop name><session #>".
-  return ("Local\\MSCTF.AsmCacheReady." + desktop_name + session_id);
 }
 #endif  // _WIN32
 
@@ -866,8 +821,7 @@ uint64_t SystemUtil::GetTotalPhysicalMemory() {
       sysctl(mib, std::size(mib), &total_memory, &size, nullptr, 0);
   if (error == -1) {
     const int error = errno;
-    LOG(ERROR) << "sysctl with hw.memsize failed. "
-               << "errno: " << error;
+    LOG(ERROR) << "sysctl with hw.memsize failed. " << "errno: " << error;
     return 0;
   }
   return total_memory;

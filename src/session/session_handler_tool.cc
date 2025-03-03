@@ -27,9 +27,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#include "session/session_handler_tool.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,27 +52,23 @@
 #include "base/protobuf/message.h"
 #include "base/protobuf/text_format.h"
 #include "base/strings/assign.h"
+#include "base/text_normalizer.h"
 #include "base/util.h"
 #include "composer/key_parser.h"
 #include "config/character_form_manager.h"
 #include "config/config_handler.h"
 #include "engine/engine_factory.h"
 #include "engine/engine_interface.h"
-#include "engine/user_data_manager_interface.h"
 #include "prediction/user_history_predictor.h"
-#include "protocol/candidates.pb.h"
+#include "protocol/candidate_window.pb.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
-#include "session/request_test_util.h"
+#include "request/request_test_util.h"
 #include "session/session_handler.h"
-#include "session/session_handler_interface.h"
-#include "session/session_handler_tool.h"
-#include "session/session_usage_observer.h"
-#include "storage/registry.h"
-#include "usage_stats/usage_stats.h"
 
 namespace mozc {
 namespace session {
+namespace {
 
 using ::mozc::commands::CandidateWord;
 using ::mozc::commands::Command;
@@ -78,7 +77,6 @@ using ::mozc::commands::Input;
 using ::mozc::commands::KeyEvent;
 using ::mozc::commands::Output;
 using ::mozc::commands::Request;
-using ::mozc::commands::RequestForUnitTest;
 using ::mozc::config::CharacterFormManager;
 using ::mozc::config::Config;
 using ::mozc::config::ConfigHandler;
@@ -87,13 +85,18 @@ using ::mozc::protobuf::Message;
 using ::mozc::protobuf::TextFormat;
 using ::mozc::session::SessionHandlerTool;
 
+std::string ToTextFormat(const Message &proto) {
+  std::string str;
+  TextFormat::PrintToString(proto, &str);
+  return str;
+}
+
+}  // namespace
+
 SessionHandlerTool::SessionHandlerTool(std::unique_ptr<EngineInterface> engine)
     : id_(0),
-      usage_observer_(std::make_unique<SessionUsageObserver>()),
-      data_manager_(engine->GetUserDataManager()),
-      handler_(std::make_unique<SessionHandler>(std::move(engine))) {
-  handler_->AddObserver(usage_observer_.get());
-}
+      engine_(engine.get()),
+      handler_(std::make_unique<SessionHandler>(std::move(engine))) {}
 
 bool SessionHandlerTool::CreateSession() {
   Command command;
@@ -123,6 +126,13 @@ bool SessionHandlerTool::ClearUserPrediction() {
   Command command;
   command.mutable_input()->set_id(id_);
   command.mutable_input()->set_type(commands::Input::CLEAR_USER_PREDICTION);
+  return handler_->EvalCommand(&command);
+}
+
+bool SessionHandlerTool::ClearUserHistory() {
+  Command command;
+  command.mutable_input()->set_id(id_);
+  command.mutable_input()->set_type(commands::Input::CLEAR_USER_HISTORY);
   return handler_->EvalCommand(&command);
 }
 
@@ -203,6 +213,18 @@ bool SessionHandlerTool::UndoOrRewind(commands::Output *output) {
   return EvalCommand(&input, output);
 }
 
+bool SessionHandlerTool::DeleteCandidateFromHistory(std::optional<int> id,
+                                                    commands::Output *output) {
+  commands::Input input;
+  input.set_type(commands::Input::SEND_COMMAND);
+  input.mutable_command()->set_type(
+      commands::SessionCommand::DELETE_CANDIDATE_FROM_HISTORY);
+  if (id.has_value()) {
+    input.mutable_command()->set_id(*id);
+  }
+  return EvalCommand(&input, output);
+}
+
 bool SessionHandlerTool::SwitchInputMode(
     commands::CompositionMode composition_mode) {
   commands::Input input;
@@ -229,10 +251,22 @@ bool SessionHandlerTool::SetConfig(const config::Config &config,
   return EvalCommand(&input, output);
 }
 
-bool SessionHandlerTool::SyncData() { return data_manager_->Wait(); }
+bool SessionHandlerTool::SyncData() {
+  engine_->Sync();
+  engine_->Wait();
+  return true;
+}
 
 void SessionHandlerTool::SetCallbackText(const absl::string_view text) {
   strings::Assign(callback_text_, text);
+}
+
+bool SessionHandlerTool::ReloadSupplementalModel(absl::string_view model_path) {
+  commands::Input input;
+  input.mutable_engine_reload_request()->set_file_path(model_path);
+  input.set_type(commands::Input::RELOAD_SPELL_CHECKER);
+  commands::Output output;
+  return EvalCommand(&input, &output);
 }
 
 bool SessionHandlerTool::EvalCommandInternal(commands::Input *input,
@@ -272,11 +306,9 @@ SessionHandlerInterpreter::SessionHandlerInterpreter()
 SessionHandlerInterpreter::SessionHandlerInterpreter(
     std::unique_ptr<EngineInterface> engine) {
   client_ = std::make_unique<SessionHandlerTool>(std::move(engine));
-  config_ = std::make_unique<Config>();
   last_output_ = std::make_unique<Output>();
   request_ = std::make_unique<Request>();
-
-  ConfigHandler::GetConfig(config_.get());
+  config_ = ConfigHandler::GetCopiedConfig();
 
   // Set up session.
   CHECK(client_->CreateSession()) << "Client initialization is failed.";
@@ -290,8 +322,7 @@ SessionHandlerInterpreter::~SessionHandlerInterpreter() {
 }
 
 void SessionHandlerInterpreter::ClearState() {
-  Config config;
-  ConfigHandler::GetDefaultConfig(&config);
+  const Config &config = ConfigHandler::DefaultConfig();
   ConfigHandler::SetConfig(config);
 
   // CharacterFormManager is not automatically updated when the config is
@@ -300,7 +331,6 @@ void SessionHandlerInterpreter::ClearState() {
 
   // Some destructors may save the state on storages. To clear the state, we
   // explicitly call destructors before clearing storages.
-  storage::Registry::Clear();
   FileUtil::UnlinkOrLogError(
       ConfigFileStream::GetFileName("user://boundary.db"));
   FileUtil::UnlinkOrLogError(
@@ -312,7 +342,6 @@ void SessionHandlerInterpreter::ClearState() {
 void SessionHandlerInterpreter::ClearAll() {
   ResetContext();
   ClearUserPrediction();
-  ClearUsageStats();
 }
 
 void SessionHandlerInterpreter::ResetContext() {
@@ -326,11 +355,8 @@ void SessionHandlerInterpreter::SyncDataToStorage() {
 
 void SessionHandlerInterpreter::ClearUserPrediction() {
   CHECK(client_->ClearUserPrediction());
+  CHECK(client_->ClearUserHistory());
   SyncDataToStorage();
-}
-
-void SessionHandlerInterpreter::ClearUsageStats() {
-  usage_stats::UsageStats::ClearAllStatsForTest();
 }
 
 const Output &SessionHandlerInterpreter::LastOutput() const {
@@ -644,6 +670,14 @@ absl::Status SessionHandlerInterpreter::Eval(
     MOZC_ASSERT_TRUE(client_->SubmitCandidate(id, last_output_.get()));
   } else if (command == "UNDO_OR_REWIND") {
     MOZC_ASSERT_TRUE(client_->UndoOrRewind(last_output_.get()));
+  } else if (command == "DELETE_CANDIDATE_FROM_HISTORY") {
+    MOZC_ASSERT_TRUE(args.size() == 1 || args.size() == 2);
+    std::optional<int> id = std::nullopt;
+    if (args.size() == 2) {
+      id = NumberUtil::SimpleAtoi(args[1]);
+    }
+    MOZC_ASSERT_TRUE(
+        client_->DeleteCandidateFromHistory(id, last_output_.get()));
   } else if (command == "SWITCH_INPUT_MODE") {
     MOZC_ASSERT_EQ(2, args.size());
     CompositionMode composition_mode;
@@ -654,13 +688,10 @@ absl::Status SessionHandlerInterpreter::Eval(
     *request_ = Request::default_instance();
     MOZC_ASSERT_TRUE(client_->SetRequest(*request_, last_output_.get()));
   } else if (command == "SET_MOBILE_REQUEST") {
-    RequestForUnitTest::FillMobileRequest(request_.get());
+    request_test_util::FillMobileRequest(request_.get());
     MOZC_ASSERT_TRUE(client_->SetRequest(*request_, last_output_.get()));
   } else if (command == "SET_HANDWRITING_REQUEST") {
-    request_->set_zero_query_suggestion(true);
-    request_->set_mixed_conversion(false);
-    request_->set_kana_modifier_insensitive_conversion(false);
-    request_->set_auto_partial_suggestion(false);
+    request_test_util::FillMobileRequestForHandwriting(request_.get());
     MOZC_ASSERT_TRUE(client_->SetRequest(*request_, last_output_.get()));
   } else if (command == "SET_REQUEST") {
     MOZC_ASSERT_TRUE(args.size() >= 3);
@@ -672,8 +703,8 @@ absl::Status SessionHandlerInterpreter::Eval(
     MOZC_ASSERT_TRUE(args.size() >= 3);
     MOZC_ASSERT_TRUE(SetOrAddFieldValueFromString(
         std::vector<std::string>(args.begin() + 1, args.end() - 1),
-        *(args.end() - 1), config_.get()));
-    MOZC_ASSERT_TRUE(client_->SetConfig(*config_, last_output_.get()));
+        *(args.end() - 1), &config_));
+    MOZC_ASSERT_TRUE(client_->SetConfig(config_, last_output_.get()));
   } else if (command == "MERGE_DECODER_EXPERIMENT_PARAMS") {
     MOZC_ASSERT_EQ(2, args.size());
     if (const std::string &textproto = args[1]; !textproto.empty()) {
@@ -682,7 +713,7 @@ absl::Status SessionHandlerInterpreter::Eval(
           << "Invalid DecoderExperimentParams: " << textproto;
       request_->mutable_decoder_experiment_params()->MergeFrom(params);
       LOG(INFO) << "DecoderExperimentParams was set:\n"
-                << MOZC_LOG_PROTOBUF(request_->decoder_experiment_params());
+                << request_->decoder_experiment_params();
       MOZC_ASSERT_TRUE(client_->SetRequest(*request_, last_output_.get()));
     }
   } else if (command == "SET_SELECTION_TEXT") {
@@ -707,16 +738,14 @@ absl::Status SessionHandlerInterpreter::Eval(
   } else if (command == "CLEAR_USER_PREDICTION") {
     MOZC_ASSERT_EQ(1, args.size());
     ClearUserPrediction();
-  } else if (command == "CLEAR_USAGE_STATS") {
-    MOZC_ASSERT_EQ(1, args.size());
-    ClearUsageStats();
   } else if (command == "EXPECT_CONSUMED") {
     MOZC_ASSERT_EQ(args.size(), 2);
     MOZC_ASSERT_TRUE(last_output_->has_consumed());
     MOZC_EXPECT_EQ(last_output_->consumed(), args[1] == "true");
   } else if (command == "EXPECT_PREEDIT") {
     // Concat preedit segments and assert.
-    const std::string &expected_preedit = args.size() == 1 ? "" : args[1];
+    const std::string &expected_preedit =
+        TextNormalizer::NormalizeText(args.size() == 1 ? "" : args[1]);
     std::string preedit_string;
     const mozc::commands::Preedit &preedit = last_output_->preedit();
     for (int i = 0; i < preedit.segment_size(); ++i) {
@@ -725,13 +754,14 @@ absl::Status SessionHandlerInterpreter::Eval(
     MOZC_EXPECT_EQ_MSG(
         preedit_string, expected_preedit,
         absl::StrCat("Expected preedit: ", expected_preedit, "\n",
-                     "Actual preedit: ", protobuf::Utf8Format(preedit)));
+                     "Actual preedit: ", ToTextFormat(preedit)));
   } else if (command == "EXPECT_PREEDIT_IN_DETAIL") {
     MOZC_ASSERT_TRUE(!args.empty());
     const mozc::commands::Preedit &preedit = last_output_->preedit();
     MOZC_ASSERT_EQ(preedit.segment_size(), args.size() - 1);
     for (int i = 0; i < preedit.segment_size(); ++i) {
-      MOZC_EXPECT_EQ_MSG(preedit.segment(i).value(), args[i + 1],
+      MOZC_EXPECT_EQ_MSG(preedit.segment(i).value(),
+                         TextNormalizer::NormalizeText(args[i + 1]),
                          absl::StrCat("Segment index = ", i));
     }
   } else if (command == "EXPECT_PREEDIT_CURSOR_POS") {
@@ -739,8 +769,7 @@ absl::Status SessionHandlerInterpreter::Eval(
     MOZC_ASSERT_EQ(args.size(), 2);
     const size_t expected_pos = NumberUtil::SimpleAtoi(args[1]);
     const mozc::commands::Preedit &preedit = last_output_->preedit();
-    MOZC_EXPECT_EQ_MSG(preedit.cursor(), expected_pos,
-                       protobuf::Utf8Format(preedit));
+    MOZC_EXPECT_EQ_MSG(preedit.cursor(), expected_pos, ToTextFormat(preedit));
   } else if (command == "EXPECT_CANDIDATE") {
     MOZC_ASSERT_EQ(args.size(), 3);
     uint32_t candidate_id = 0;
@@ -748,58 +777,57 @@ absl::Status SessionHandlerInterpreter::Eval(
     MOZC_EXPECT_TRUE_MSG(
         has_result,
         absl::StrCat(args[2], " is not found\n",
-                     protobuf::Utf8Format(last_output_->candidates())));
+                     ToTextFormat(last_output_->candidate_window())));
     if (has_result) {
       MOZC_EXPECT_EQ_MSG(
           candidate_id, NumberUtil::SimpleAtoi(args[1]),
           absl::StrCat(args[1], " is not found\n",
-                       protobuf::Utf8Format(last_output_->candidates())));
+                       ToTextFormat(last_output_->candidate_window())));
     }
   } else if (command == "EXPECT_CANDIDATE_DESCRIPTION") {
     MOZC_ASSERT_EQ(args.size(), 3);
     const CandidateWord &cand = GetCandidateByValue(args[1]);
     const bool has_cand = !cand.value().empty();
     MOZC_EXPECT_TRUE_MSG(
-        has_cand,
-        absl::StrCat(args[1], " is not found\n",
-                     protobuf::Utf8Format(last_output_->candidates())));
+        has_cand, absl::StrCat(args[1], " is not found\n",
+                               ToTextFormat(last_output_->candidate_window())));
     MOZC_EXPECT_TRUE(has_cand);
     MOZC_EXPECT_EQ_MSG(cand.annotation().description(), args[2],
-                       protobuf::Utf8Format(cand));
+                       ToTextFormat(cand));
   } else if (command == "EXPECT_RESULT") {
     if (args.size() == 2 && !args[1].empty()) {
       MOZC_ASSERT_TRUE(last_output_->has_result());
       const mozc::commands::Result &result = last_output_->result();
-      MOZC_EXPECT_EQ_MSG(result.value(), args[1], protobuf::Utf8Format(result));
+      MOZC_EXPECT_EQ_MSG(result.value(), TextNormalizer::NormalizeText(args[1]),
+                         ToTextFormat(result));
     } else {
       MOZC_EXPECT_TRUE_MSG(!last_output_->has_result(),
-                           protobuf::Utf8Format(last_output_->result()));
+                           ToTextFormat(last_output_->result()));
     }
   } else if (command == "EXPECT_IN_ALL_CANDIDATE_WORDS") {
     MOZC_ASSERT_EQ(args.size(), 2);
     uint32_t candidate_id = 0;
     const bool has_result = GetCandidateIdByValue(args[1], &candidate_id);
-    MOZC_EXPECT_TRUE_MSG(has_result,
-                         absl::StrCat(args[1], " is not found.\n",
-                                      protobuf::Utf8Format(*last_output_)));
+    MOZC_EXPECT_TRUE_MSG(has_result, absl::StrCat(args[1], " is not found.\n",
+                                                  ToTextFormat(*last_output_)));
   } else if (command == "EXPECT_NOT_IN_ALL_CANDIDATE_WORDS") {
     MOZC_ASSERT_EQ(args.size(), 2);
     uint32_t candidate_id = 0;
     const bool has_result = GetCandidateIdByValue(args[1], &candidate_id);
-    MOZC_EXPECT_TRUE_MSG(!has_result,
-                         absl::StrCat(args[1], " is found.\n",
-                                      protobuf::Utf8Format(*last_output_)));
+    MOZC_EXPECT_TRUE_MSG(
+        !has_result,
+        absl::StrCat(args[1], " is found.\n", ToTextFormat(*last_output_)));
   } else if (command == "EXPECT_HAS_CANDIDATES") {
     if (args.size() == 2 && !args[1].empty()) {
-      MOZC_ASSERT_TRUE(last_output_->has_candidates());
-      MOZC_ASSERT_TRUE_MSG(
-          last_output_->candidates().size() > NumberUtil::SimpleAtoi(args[1]),
-          protobuf::Utf8Format(*last_output_));
+      MOZC_ASSERT_TRUE(last_output_->has_candidate_window());
+      MOZC_ASSERT_TRUE_MSG(last_output_->candidate_window().size() >
+                               NumberUtil::SimpleAtoi(args[1]),
+                           ToTextFormat(*last_output_));
     } else {
-      MOZC_ASSERT_TRUE(last_output_->has_candidates());
+      MOZC_ASSERT_TRUE(last_output_->has_candidate_window());
     }
   } else if (command == "EXPECT_NO_CANDIDATES") {
-    MOZC_ASSERT_TRUE(!last_output_->has_candidates());
+    MOZC_ASSERT_TRUE(!last_output_->has_candidate_window());
   } else if (command == "EXPECT_SEGMENTS_SIZE") {
     MOZC_ASSERT_EQ(args.size(), 2);
     MOZC_ASSERT_EQ(last_output_->preedit().segment_size(),
@@ -817,32 +845,6 @@ absl::Status SessionHandlerInterpreter::Eval(
       }
     }
     MOZC_ASSERT_EQ(index, NumberUtil::SimpleAtoi(args[1]));
-  } else if (command == "EXPECT_USAGE_STATS_COUNT") {
-    MOZC_ASSERT_EQ(args.size(), 3);
-    const uint32_t expected_value = NumberUtil::SimpleAtoi(args[2]);
-    if (expected_value == 0) {
-      MOZC_EXPECT_STATS_NOT_EXIST(args[1]);
-    } else {
-      MOZC_EXPECT_COUNT_STATS(args[1], expected_value);
-    }
-  } else if (command == "EXPECT_USAGE_STATS_INTEGER") {
-    MOZC_ASSERT_EQ(args.size(), 3);
-    MOZC_EXPECT_INTEGER_STATS(args[1], NumberUtil::SimpleAtoi(args[2]));
-  } else if (command == "EXPECT_USAGE_STATS_BOOLEAN") {
-    MOZC_ASSERT_EQ(args.size(), 3);
-    MOZC_EXPECT_BOOLEAN_STATS(args[1], args[2] == "true");
-  } else if (command == "EXPECT_USAGE_STATS_TIMING") {
-    MOZC_ASSERT_EQ(args.size(), 6);
-    const uint32_t expected_num = NumberUtil::SimpleAtoi(args[3]);
-    if (expected_num == 0) {
-      MOZC_EXPECT_STATS_NOT_EXIST(args[1]);
-    } else {
-      const uint64_t expected_total = NumberUtil::SimpleAtoi(args[2]);
-      const uint32_t expected_min = NumberUtil::SimpleAtoi(args[4]);
-      const uint32_t expected_max = NumberUtil::SimpleAtoi(args[5]);
-      MOZC_EXPECT_TIMING_STATS(args[1], expected_total, expected_num,
-                               expected_min, expected_max);
-    }
   } else {
     return absl::Status(absl::StatusCode::kUnimplemented, "");
   }
@@ -852,6 +854,11 @@ absl::Status SessionHandlerInterpreter::Eval(
 
 void SessionHandlerInterpreter::SetRequest(const commands::Request &request) {
   *request_ = request;
+}
+
+void SessionHandlerInterpreter::ReloadSupplementalModel(
+    absl::string_view model_path) {
+  client_->ReloadSupplementalModel(model_path);
 }
 
 }  // namespace session

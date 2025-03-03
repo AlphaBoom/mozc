@@ -63,10 +63,6 @@ UINT __stdcall ShutdownServer(MSIHANDLE msi_handle);
 // uninstall_helper.h for details.
 UINT __stdcall RestoreUserIMEEnvironment(MSIHANDLE msi_handle);
 
-// Ensures that Mozc is disabled for the service account.  See the comment in
-// uninstall_helper.h for details.
-UINT __stdcall EnsureIMEIsDisabledForServiceAccount(MSIHANDLE msi_handle);
-
 // Hides the cancel button on a progress dialog shown by the installer.
 UINT __stdcall HideCancelButton(MSIHANDLE msi_handle);
 
@@ -79,6 +75,9 @@ UINT __stdcall InitialInstallationCommit(MSIHANDLE msi_handle);
 
 // Enable TIP profile for the calling user unless it's a service account.
 UINT __stdcall EnableTipProfile(MSIHANDLE msi_handle);
+
+// Update config1.db file access controll to make it readable to AppContainer.
+UINT __stdcall FixupConfigFilePermission(MSIHANDLE msi_handle);
 
 // Saves omaha's ap value for WriteApValue, WriteApValueRollback, and
 // RestoreServiceState.

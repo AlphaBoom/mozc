@@ -30,30 +30,34 @@
 #ifndef MOZC_REWRITER_SYMBOL_REWRITER_H_
 #define MOZC_REWRITER_SYMBOL_REWRITER_H_
 
+#include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "absl/strings/string_view.h"
 #include "data_manager/serialized_dictionary.h"
 #include "rewriter/rewriter_interface.h"
-// for FRIEND_TEST()
-#include "absl/strings/string_view.h"
-#include "testing/gunit_prod.h"
+#include "testing/friend_test.h"
 
 namespace mozc {
 
 class ConversionRequest;
 class ConverterInterface;
-class DataManagerInterface;
+class DataManager;
 class Segment;
 class Segments;
 
 class SymbolRewriter : public RewriterInterface {
  public:
-  explicit SymbolRewriter(const ConverterInterface *parent_converter,
-                          const DataManagerInterface *data_manager);
+  explicit SymbolRewriter(const DataManager &data_manager);
   ~SymbolRewriter() override = default;
 
   int capability(const ConversionRequest &request) const override;
+
+  std::optional<RewriterInterface::ResizeSegmentsRequest>
+  CheckResizeSegmentsRequest(const ConversionRequest &request,
+                             const Segments &segments) const override;
 
   bool Rewrite(const ConversionRequest &request,
                Segments *segments) const override;
@@ -86,7 +90,7 @@ class SymbolRewriter : public RewriterInterface {
                                const SerializedDictionary::IterRange &range,
                                bool context_sensitive, Segment *segment);
 
-  // Add symbol desc to exsisting candidates
+  // Add symbol desc to existing candidates
   static void AddDescForCurrentCandidates(
       const SerializedDictionary::IterRange &range, Segment *segment);
 
@@ -101,7 +105,6 @@ class SymbolRewriter : public RewriterInterface {
   bool RewriteEachCandidate(const ConversionRequest &request,
                             Segments *segments) const;
 
-  const ConverterInterface *parent_converter_;
   std::unique_ptr<SerializedDictionary> dictionary_;
 };
 

@@ -42,7 +42,6 @@
         'internal/char_chunk.cc',
         'internal/composition.cc',
         'internal/composition_input.cc',
-        'internal/converter.cc',
         'internal/mode_switching_handler.cc',
         'internal/special_key.cc',
         'internal/transliterators.cc',
@@ -51,6 +50,7 @@
       'dependencies': [
         'key_event_util',
         'key_parser',
+        '<(mozc_oss_src_dir)/base/absl.gyp:absl_log',
         '<(mozc_oss_src_dir)/base/absl.gyp:absl_strings',
         '<(mozc_oss_src_dir)/base/absl.gyp:absl_time',
         '<(mozc_oss_src_dir)/base/base.gyp:base',

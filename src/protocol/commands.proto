@@ -37,7 +37,7 @@ syntax = "proto2";
 
 package mozc.commands;
 
-import "protocol/candidates.proto";
+import "protocol/candidate_window.proto";
 import "protocol/config.proto";
 import "protocol/engine_builder.proto";
 import "protocol/user_dictionary_storage.proto";
@@ -83,6 +83,7 @@ message KeyEvent {
     HENKAN = 13;
     MUHENKAN = 14;
     // VK_DBE_HIRAGANA(Win), kVK_JIS_Kana(Mac)
+    // The "Katakana Hiragana Romaji" key (w/o modifiers) returns this key code.
     KANA = 15;  // GUI label is "Hiragana".
     HOME = 16;
     END = 17;
@@ -135,6 +136,7 @@ message KeyEvent {
     TEXT_INPUT = 64;  // Meta key event representing any text input.
     HANKAKU = 65;     // GUI label is "Hankaku/Zenkaku".
     KANJI = 66;
+    // The "Katakana Hiragana Romaji" key with Shift returns this key code.
     KATAKANA = 67;  // VK_DBE_KATAKANA(Win)
     CAPS_LOCK = 68;
     // Unsupported keys (e.g. PrtSc, Pause) fall back to UNDEFINED_KEY.
@@ -384,8 +386,8 @@ message SessionCommand {
     // Specify the input field type.
     SWITCH_INPUT_FIELD_TYPE = 12;
 
-    // Client side event information for collecting usage statistics
-    USAGE_STATS_EVENT = 13;
+    reserved 13;
+    reserved "USAGE_STATS_EVENT";
 
     // This command is used in only Android.
     // Works UNDO or rewind HIRAGANA characters based on the state.
@@ -457,38 +459,8 @@ message SessionCommand {
 
   reserved 6;  // Deprecated input_field_type
 
-  // Client side event for collecting usage statistics
-  enum UsageStatsEvent {
-    INFOLIST_WINDOW_SHOW = 1;
-    INFOLIST_WINDOW_HIDE = 2;
-    HANDWRITING_OPEN_EVENT = 3;
-    HANDWRITING_COMMIT_EVENT = 4;
-    CHARACTER_PALETTE_OPEN_EVENT = 5;
-    CHARACTER_PALETTE_COMMIT_EVENT = 6;
-    SOFTWARE_KEYBOARD_LAYOUT_LANDSCAPE = 7;
-    SOFTWARE_KEYBOARD_LAYOUT_PORTRAIT = 8;
-    SUBMITTED_CANDIDATE_ROW_0 = 9;
-    SUBMITTED_CANDIDATE_ROW_1 = 10;
-    SUBMITTED_CANDIDATE_ROW_2 = 11;
-    SUBMITTED_CANDIDATE_ROW_3 = 12;
-    SUBMITTED_CANDIDATE_ROW_4 = 13;
-    SUBMITTED_CANDIDATE_ROW_5 = 14;
-    SUBMITTED_CANDIDATE_ROW_6 = 15;
-    SUBMITTED_CANDIDATE_ROW_7 = 16;
-    SUBMITTED_CANDIDATE_ROW_8 = 17;
-    SUBMITTED_CANDIDATE_ROW_9 = 18;
-    SUBMITTED_CANDIDATE_ROW_GE10 = 19;
-    KEYBOARD_FOLD_EVENT = 20;
-    KEYBOARD_EXPAND_EVENT = 21;
-    MUSHROOM_SELECTION_DIALOG_OPEN_EVENT = 22;
-    reserved 23, 24;  // Deprecated keyboard height stats.
-    SOFTWARE_KEYBOARD_LAYOUT_ADJUSTMENT_ENABLED_LANDSCAPE = 25;
-    SOFTWARE_KEYBOARD_LAYOUT_ADJUSTMENT_ENABLED_PORTRAIT = 26;
-    SOFTWARE_KEYBOARD_LAYOUT_ENGLISH_LANDSCAPE = 27;
-    SOFTWARE_KEYBOARD_LAYOUT_ENGLISH_PORTRAIT = 28;
-  }
-  optional UsageStatsEvent usage_stats_event = 7;
-  optional int32 usage_stats_event_int_value = 9;
+  reserved 7;  // Deprecated usage_stats_event
+  reserved 9;  // Deprecated usage_stats_event_int_value
 
   reserved 8;  // Deprecated caret_rectangle
 
@@ -519,7 +491,6 @@ message Context {
   // by the user's configuration.  If you want to omit interim
   // suggestions during the key typing, you might want to use
   // request_suggestion.
-  // TODO(komatsu): Delete this field and use experimental_features.
   optional bool suppress_suggestion = 3 [default = false];
 
   // Input field type.
@@ -572,7 +543,7 @@ message Capability {
       [default = NO_TEXT_DELETION_CAPABILITY];
 }
 
-// Next ID: 50
+// Next ID: 106
 // Bundles together some Android experiment flags so that they can be easily
 // retrieved throughout the native code.  These flags are generally specific to
 // the decoder, and are made available when the decoder is initialized.
@@ -580,19 +551,6 @@ message DecoderExperimentParams {
   reserved 1;
 
   optional int32 mobile_history_prediction_size = 2;
-
-  reserved 3;  // Deprecated enable_strict_candidate_filter
-
-  // whether to use new spatial scoring function.
-  // TODO(taku): This flag will be deleted after the migration.
-  optional bool enable_new_spatial_scoring = 4;
-  optional int32 spatial_cost_penalty = 5 [default = 1700];
-  // Apply the adaptive `spatial_cost_penalty` penalty only if the
-  // `key_length` >= spatial_cost_penalty_min_char_length.
-  // Otherwise, use the default penalty 1700.
-  optional int32 spatial_cost_penalty_min_char_length = 6 [default = 0];
-
-  reserved 7;  // Deprecated enrich_partial_candidates
 
   enum VariationCharacterType {
     NO_VARIATION = 0;
@@ -605,69 +563,92 @@ message DecoderExperimentParams {
   // Bitmap of enabled variation character types.
   optional uint32 variation_character_types = 8 [default = 0];
 
-  reserved 9;   // Deprecated enable_number_decoder
-  reserved 10;  // Deprecated cancel_segment_model_penalty_for_prediction
-  reserved 11;  // Deprecated enable_environmental_filter_rewriter
-  reserved 12;  // Deprecated undo_partial_commit
-  reserved 13;  // Deprecated use_actual_converter_for_realtime_conversion
-  reserved 14;  // Deprecated enable_single_kanji_prediction
-  reserved 15;  // Deprecated single_kanji_prediction_cost_offset
+  // Enables final results reranking against literal results.
+  // If zero, the previous implementation is used.
+  optional int32 typing_correction_result_reranker_mode = 95 [default = 0];
 
-  // Parameters for typing correction candidates
-  optional int32 typing_correction_max_count = 17 [default = 3];
-  optional int32 typing_correction_max_rank = 18 [default = 10];
-  optional float typing_correction_identity_score_max_diff = 21 [default = 0.0];
-  optional float typing_correction_top_score_max_diff = 22 [default = 1.0];
+  // Promote TC/Literal if w * tc_reranker_score + (1.0 - w) lm_diff > 0.0.
+  optional float typing_correction_result_reranker_interpolation_weight = 100
+      [default = 0.0];
 
-  // TODO(taku): deprecate it once v2 mixer is enabled.
-  optional int32 typing_correction_conversion_cost_max_diff = 38 [default = 0];
+  // Runs Literal-at-least second when original_tc_score + w * tc_reranker_score
+  // > 0.0. otherwise, runs literal-on-top.
+  optional float typing_correction_result_reranker_literal_on_top_weight = 101
+      [default = 0.0];
 
-  // Parameters for new typing correction mixing logic.
-  // `typing_correction_literal_on_top_*` are available only when
-  // enable_typing_correction_mixer_v2 is true.
-  optional bool enable_typing_correction_mixer_v2 = 46 [default = false];
-  // Trigger literal on top if
-  // correction_score <=
-  //          typing_correction_literal_on_top_correction_score_max_diff
-  //  OR
-  // conversion_cost_diff <=
-  //          typing_correction_literal_on_top_spatial_score_max_diff
-  optional float typing_correction_literal_on_top_correction_score_max_diff = 47
-      [default = 0.5];
-  optional int32 typing_correction_literal_on_top_conversion_cost_max_diff = 48
-      [default = 2000];
-  // Literal candidate is placed at least second position.
-  optional bool typing_correction_literal_at_least_second = 49
-      [default = false];
-
-  // Parameters for completion
-  // The diff against the identity score.
-  optional float typing_completion_identity_score_max_diff = 39
-      [default = -1.0];
-  // The maximum number of characters to complete. If zero, completion is
-  // disabled.
-  optional int32 typing_completion_max_length = 40 [default = 0];
-  // Starts the completion when |query| >= start_length.
-  optional int32 typing_completion_start_length = 41 [default = 4];
-
-  reserved 16;  // Deprecated use_typing_correction_diff_cost
-  reserved 19;  // Deprecated typing_correction_cost_offset
-  reserved 20;  // Deprecated cancel_content_word_suffix_penalty
-  reserved 23;  // Deprecated typing_correction_score_offset
-  reserved 24;  // Deprecated typing_correction_move_literal_candidate_to_top
-  reserved 30;  // Deprecated enable_number_style_learning
+  // Uses the typing correction in user history predictor. The size specifies
+  // the maximum number of typing corrections used for query lookup.
+  // When zero, typing_correction is not used.
+  optional int32 typing_correction_apply_user_history_size = 85 [default = 0];
 
   optional bool disable_zero_query_suffix_prediction = 36 [default = false];
 
-  optional bool enable_realtime_conversion_v2 = 37 [default = false];
+  optional bool enable_realtime_conversion_candidate_checker = 62
+      [default = false];
 
   optional bool enable_findability_oriented_order = 42 [default = false];
   optional int32 findability_oriented_order_top_size = 43 [default = 10];
 
-  optional bool apply_user_segment_history_rewriter_for_prediction = 44
+  // Changes the size of history with character coverage.
+  optional int32 user_history_prediction_max_char_coverage = 82 [default = 0];
+
+  // Remove redundant candidates.
+  optional int32 user_history_prediction_filter_redundant_candidates_mode = 84
+      [default = 0];
+
+  // Enables more aggressive bigram triggering for UX v2.
+  optional bool user_history_prediction_aggressive_bigram = 86
       [default = false];
 
-  optional bool filter_noisy_number_candidate = 45 [default = false];
+  // Parameter for space-insertion for English compounds
+  // value 0: no insertion. Candidates will be like this.
+  // - "Google"
+  // - "GOOGLE"
+  // - "google"
+  // value 1: expand for all English candidates
+  // This mode adds space-prefixed candidates for three style, like this.
+  // - "Google"
+  // - " Google"
+  // - "GOOGLE"
+  // - " GOOGLE"
+  // - "google"
+  // - " google"
+  optional int32 english_variation_space_insertion_mode = 55 [default = 0];
+
+  optional int32 candidate_consistency_cost_max_diff = 63 [default = 0];
+
+  optional int32 max_composition_event_to_process = 64 [default = 2];
+
+  // Offset to promote Katakana candidates in rewriter.
+  // The promotion will be disabled if the value is negative.
+  optional int32 katakana_promotion_offset = 83 [default = 5];
+
+  // Parameters for realtime conversion
+  // (go/mozc-src/converter/immutable_converter.cc for details)
+  //
+  // - Character coverage for single segment
+  // If the total length of the included candidates' value does not exceed this
+  // value, the target candidate will not be filtered even when the boundary is
+  // the same with the top candidate.
+  optional int32 realtime_conversion_single_segment_char_coverage = 98
+      [default = 0];
+  // Cost max diff for first segment to filter candidates.
+  // default_value: 500*log(500)
+  optional int32 realtime_conversion_candidate_checker_cost_max_diff = 99
+      [default = 3107];
+
+  // Cost offset for handwriting conversion candidate.
+  // default_value: 10*log(500)
+  optional int32 handwriting_conversion_candidate_cost_offset = 102
+      [default = 1151];
+
+  // Relax the replaceable condition to remember candidate in user segment
+  // history rewriter wheh the target segment contains proper noun candidate.
+  optional bool user_segment_history_rewriter_replace_proper_noun = 103
+      [default = false];
+
+  // Apply inner segment boundary information to the single segment candidate.
+  optional bool apply_single_inner_segment_boundary = 105 [default = true];
 }
 
 // Clients' request to the server.
@@ -817,9 +798,9 @@ message Request {
   // by "かつこう".
   optional bool kana_modifier_insensitive_conversion = 9 [default = false];
 
-  // Enables Auto partial suggestion.
-  // For Auto partial suggestion, we can see first segment only candidates
-  // adding to normal realtime conversion suggestion results.
+  // Enables Auto partial suggestion (prefix candidates).
+  // For Auto partial suggestion, we can see candidates that match
+  // the prefix of the input reading.
   // If we commit that candidate, we will show suggestions for remaining part
   // of key.
   //
@@ -921,7 +902,8 @@ message Request {
   // WARNING: Although cases are mutually exclusive now, they are not
   // necessarily mutually exclusive. However, the current implementation in
   // NormalizationRewriter assumes they are mutually exclusive.
-  // Next ID: 13
+  // LINT.IfChange
+  // Next ID: 14
   enum AdditionalRenderableCharacterGroup {
     // Do not use this case. This case is reserved for future usage.
     // Because 0th element in enum is used as default value, in order to prevend
@@ -958,6 +940,8 @@ message Request {
     EMOJI_15_0 = 9;
     // Emoji 15.1, released September 2023
     EMOJI_15_1 = 12;
+    // Emoji 16.0, released September 2024
+    EMOJI_16_0 = 13;
 
     // Additional Hieroglyphs (U+13000 ~ U+1342E)
     // Unicode 5.2, released October 2009
@@ -966,6 +950,7 @@ message Request {
     // IVS characters in Adobe-Japan1 (U+E0100 ~ U+E010E)
     IVS_CHARACTER = 11;
   }
+  // LINT.ThenChange(rewriter/environmental_filter_rewriter.cc)
 
   // Characters in the union of this list of groups can be contained in
   // candidates.
@@ -1099,13 +1084,11 @@ message Input {
     // Sends reload spellchecker.
     RELOAD_SPELL_CHECKER = 29;
 
+    GET_SERVER_VERSION = 19;
+
     // Number of commands.
     // When new command is added, the command should use below number
     // and NUM_OF_COMMANDS should be incremented.
-    //
-    // Note: This enum lack the value for 19 and it may cause a crash.
-    //       Please reuse these value if you can.
-    //       19 was used to clear synced data on dev channel.
     NUM_OF_COMMANDS = 30;
   }
   required CommandType type = 1;
@@ -1318,7 +1301,7 @@ message DeletionRange {
   optional int32 length = 2;
 }
 
-// Next ID: 26
+// Next ID: 27
 message Output {
   optional uint64 id = 1 [jstype = JS_STRING];
 
@@ -1328,7 +1311,7 @@ message Output {
   optional bool consumed = 3;
   optional Result result = 4;
   optional Preedit preedit = 5;
-  optional Candidates candidates = 6;
+  optional CandidateWindow candidate_window = 6;
   optional KeyEvent key = 7;
 
   // when URL is non empty, UI can open the page with a browser,
@@ -1410,6 +1393,12 @@ message Output {
   // Candidate words stored in 1D array. The field should be filled without
   // using any personal data.
   optional CandidateList incognito_candidate_words = 25;
+
+  message VersionInfo {
+    optional string mozc_version = 1;
+    optional string data_version = 2;
+  }
+  optional VersionInfo server_version = 26;
 }
 
 message Command {

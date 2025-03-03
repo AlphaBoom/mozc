@@ -37,10 +37,12 @@
 #include <utility>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "base/logging.h"
 #include "base/util.h"
+#include "converter/converter_interface.h"
 #include "converter/segments.h"
 #include "prediction/predictor_interface.h"
 #include "protocol/commands.pb.h"
@@ -105,13 +107,12 @@ std::optional<std::string> GetReading(const ConverterInterface &converter,
 BasePredictor::BasePredictor(
     std::unique_ptr<PredictorInterface> dictionary_predictor,
     std::unique_ptr<PredictorInterface> user_history_predictor,
-    const ConverterInterface *converter)
+    const ConverterInterface &converter)
     : dictionary_predictor_(std::move(dictionary_predictor)),
       user_history_predictor_(std::move(user_history_predictor)),
-      converter_{converter} {
+      converter_(converter) {
   DCHECK(dictionary_predictor_);
   DCHECK(user_history_predictor_);
-  DCHECK(converter_);
 }
 
 void BasePredictor::Finish(const ConversionRequest &request,
@@ -172,7 +173,7 @@ void BasePredictor::PopulateReadingOfCommittedCandidateIfMissing(
   if (!cand->key.empty() || cand->value.empty()) return;
 
   if (cand->content_value == cand->value) {
-    if (std::optional<std::string> key = GetReading(*converter_, cand->value);
+    if (std::optional<std::string> key = GetReading(converter_, cand->value);
         key.has_value()) {
       cand->key = *key;
       cand->content_key = *std::move(key);
@@ -191,7 +192,7 @@ void BasePredictor::PopulateReadingOfCommittedCandidateIfMissing(
     return;
   }
   if (std::optional<std::string> content_key =
-          GetReading(*converter_, cand->content_value);
+          GetReading(converter_, cand->content_value);
       content_key.has_value()) {
     cand->key = absl::StrCat(*content_key, functional_value);
     cand->content_key = *std::move(content_key);
@@ -202,7 +203,7 @@ void BasePredictor::PopulateReadingOfCommittedCandidateIfMissing(
 std::unique_ptr<PredictorInterface> DefaultPredictor::CreateDefaultPredictor(
     std::unique_ptr<PredictorInterface> dictionary_predictor,
     std::unique_ptr<PredictorInterface> user_history_predictor,
-    const ConverterInterface *converter) {
+    const ConverterInterface &converter) {
   return std::make_unique<DefaultPredictor>(std::move(dictionary_predictor),
                                             std::move(user_history_predictor),
                                             converter);
@@ -211,7 +212,7 @@ std::unique_ptr<PredictorInterface> DefaultPredictor::CreateDefaultPredictor(
 DefaultPredictor::DefaultPredictor(
     std::unique_ptr<PredictorInterface> dictionary_predictor,
     std::unique_ptr<PredictorInterface> user_history_predictor,
-    const ConverterInterface *converter)
+    const ConverterInterface &converter)
     : BasePredictor(std::move(dictionary_predictor),
                     std::move(user_history_predictor), converter),
       predictor_name_("DefaultPredictor") {}
@@ -231,15 +232,18 @@ bool DefaultPredictor::PredictForRequest(const ConversionRequest &request,
 
   int size = kPredictionSize;
   if (request.request_type() == ConversionRequest::SUGGESTION) {
-    size = std::min(9, std::max<int>(1, request.config().suggestions_size()));
+    size = std::clamp<int>(request.config().suggestions_size(), 1, 9);
   }
 
   bool result = false;
   int remained_size = size;
-  ConversionRequest request_for_prediction = request;
-  request_for_prediction.set_max_user_history_prediction_candidates_size(size);
-  request_for_prediction
-      .set_max_user_history_prediction_candidates_size_for_zero_query(size);
+  ConversionRequest::Options options = request.options();
+  options.max_user_history_prediction_candidates_size = size;
+  options.max_user_history_prediction_candidates_size_for_zero_query = size;
+  ConversionRequest request_for_prediction = ConversionRequestBuilder()
+                                                 .SetConversionRequest(request)
+                                                 .SetOptions(std::move(options))
+                                                 .Build();
   result |= user_history_predictor_->PredictForRequest(request_for_prediction,
                                                        segments);
   remained_size = size - static_cast<size_t>(GetCandidatesSize(*segments));
@@ -250,9 +254,14 @@ bool DefaultPredictor::PredictForRequest(const ConversionRequest &request,
     return result;
   }
 
-  request_for_prediction.set_max_dictionary_prediction_candidates_size(
-      remained_size);
-  result |= dictionary_predictor_->PredictForRequest(request_for_prediction,
+  ConversionRequest::Options options2 = request_for_prediction.options();
+  options2.max_dictionary_prediction_candidates_size = remained_size;
+  const ConversionRequest request_for_prediction2 =
+      ConversionRequestBuilder()
+          .SetConversionRequest(request_for_prediction)
+          .SetOptions(std::move(options2))
+          .Build();
+  result |= dictionary_predictor_->PredictForRequest(request_for_prediction2,
                                                      segments);
   return result;
 }
@@ -261,7 +270,7 @@ bool DefaultPredictor::PredictForRequest(const ConversionRequest &request,
 std::unique_ptr<PredictorInterface> MobilePredictor::CreateMobilePredictor(
     std::unique_ptr<PredictorInterface> dictionary_predictor,
     std::unique_ptr<PredictorInterface> user_history_predictor,
-    const ConverterInterface *converter) {
+    const ConverterInterface &converter) {
   return std::make_unique<MobilePredictor>(std::move(dictionary_predictor),
                                            std::move(user_history_predictor),
                                            converter);
@@ -270,7 +279,7 @@ std::unique_ptr<PredictorInterface> MobilePredictor::CreateMobilePredictor(
 MobilePredictor::MobilePredictor(
     std::unique_ptr<PredictorInterface> dictionary_predictor,
     std::unique_ptr<PredictorInterface> user_history_predictor,
-    const ConverterInterface *converter)
+    const ConverterInterface &converter)
     : BasePredictor(std::move(dictionary_predictor),
                     std::move(user_history_predictor), converter),
       predictor_name_("MobilePredictor") {}
@@ -279,45 +288,47 @@ MobilePredictor::~MobilePredictor() = default;
 
 ConversionRequest MobilePredictor::GetRequestForPredict(
     const ConversionRequest &request, const Segments &segments) {
-  ConversionRequest ret = request;
+  ConversionRequest::Options options = request.options();
   size_t history_prediction_size = GetHistoryPredictionSizeFromRequest(request);
   switch (request.request_type()) {
     case ConversionRequest::SUGGESTION: {
-      ret.set_max_user_history_prediction_candidates_size(
-          history_prediction_size);
-      ret.set_max_user_history_prediction_candidates_size_for_zero_query(4);
-      ret.set_max_dictionary_prediction_candidates_size(20);
+      options.max_user_history_prediction_candidates_size =
+          history_prediction_size;
+      options.max_user_history_prediction_candidates_size_for_zero_query = 4;
+      options.max_dictionary_prediction_candidates_size = 20;
       break;
     }
     case ConversionRequest::PARTIAL_SUGGESTION: {
-      ret.set_max_dictionary_prediction_candidates_size(20);
+      options.max_dictionary_prediction_candidates_size = 20;
       break;
     }
     case ConversionRequest::PARTIAL_PREDICTION: {
-      ret.set_max_dictionary_prediction_candidates_size(kMobilePredictionSize);
+      options.max_dictionary_prediction_candidates_size = kMobilePredictionSize;
       break;
     }
     case ConversionRequest::PREDICTION: {
-      ret.set_max_user_history_prediction_candidates_size(
-          history_prediction_size);
-      ret.set_max_user_history_prediction_candidates_size_for_zero_query(4);
-      ret.set_max_dictionary_prediction_candidates_size(kMobilePredictionSize);
+      options.max_user_history_prediction_candidates_size =
+          history_prediction_size;
+      options.max_user_history_prediction_candidates_size_for_zero_query = 4;
+      options.max_dictionary_prediction_candidates_size = kMobilePredictionSize;
       break;
     }
     default:
-      DLOG(ERROR) << "Never reach here.";
+      DLOG(ERROR) << "Unexpected request type: " << request.request_type();
   }
-  return ret;
+  return ConversionRequestBuilder()
+      .SetConversionRequest(request)
+      .SetOptions(std::move(options))
+      .Build();
 }
 
 namespace {
 // Fills empty lid and rid of candidates with the candidates of the same value.
 void MaybeFillFallbackPos(Segments *segments) {
-  for (size_t si = 0; si < segments->conversion_segments_size(); ++si) {
+  for (Segment &segment : segments->conversion_segments()) {
     absl::flat_hash_map<absl::string_view, Segment::Candidate *> posless_cands;
-    Segment *seg = segments->mutable_conversion_segment(si);
-    for (size_t ci = 0; ci < seg->candidates_size(); ++ci) {
-      Segment::Candidate *cand = seg->mutable_candidate(ci);
+    for (size_t ci = 0; ci < segment.candidates_size(); ++ci) {
+      Segment::Candidate *cand = segment.mutable_candidate(ci);
       // Candidates with empty POS come before candidates with filled POS.
       if (cand->lid == 0 || cand->rid == 0) {
         posless_cands[cand->value] = cand;
@@ -390,8 +401,8 @@ bool MobilePredictor::PredictForRequest(const ConversionRequest &request,
                                                          segments);
       break;
     }
-    default: {
-    }  // Never reach here
+    default:
+      DLOG(FATAL) << "Unexpected request type: " << request.request_type();
   }
 
   MaybeFillFallbackPos(segments);

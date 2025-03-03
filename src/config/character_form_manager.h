@@ -47,7 +47,6 @@ namespace config {
 //   mozc::Util class.
 class CharacterFormManager {
  public:
-  enum FormType { UNKNOWN_FORM, HALF_WIDTH, FULL_WIDTH };
   struct NumberFormStyle {
     Config::CharacterForm form;
     NumberUtil::NumberString::Style style;
@@ -68,6 +67,17 @@ class CharacterFormManager {
   void ConvertPreeditString(absl::string_view input, std::string *output) const;
   void ConvertConversionString(absl::string_view input,
                                std::string *output) const;
+
+  std::string ConvertPreeditString(absl::string_view input) const {
+    std::string output;
+    ConvertPreeditString(input, &output);
+    return output;
+  }
+  std::string ConvertConversionString(absl::string_view input) const {
+    std::string output;
+    ConvertConversionString(input, &output);
+    return output;
+  }
 
   // Converts string according to the config rules.
   // if alternate output, which should be shown next to
@@ -124,27 +134,6 @@ class CharacterFormManager {
   // Utility function: pass character form.
   static std::string ConvertWidth(std::string input,
                                   Config::CharacterForm form);
-
-  // Returns form types for given two pair of strings.
-  // This function tries to find the difference between
-  // |input1| and |input2| and find the place where the script
-  // form (halfwidth/fullwidth) is different. This function returns
-  // true if input1 or input2 needs to have full/half width annotation.
-  //
-  // Example:
-  //  input1="ABCぐーぐる input2="ＡＢＣ"
-  //  form1=Half form2=Full
-  //
-  // If input1 and input2 have mixed form types and the result
-  // is ambiguous, this function returns false.
-  //
-  // Ambiguous case:
-  //  input1="ABC１２３" input2="ＡＢＣ123"
-  //  return false.
-  static bool GetFormTypesFromStringPair(absl::string_view input1,
-                                         FormType *form1,
-                                         absl::string_view input2,
-                                         FormType *form2);
 
   // Returns the singleton instance.
   static CharacterFormManager *GetCharacterFormManager();

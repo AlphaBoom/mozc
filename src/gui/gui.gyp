@@ -600,7 +600,6 @@
         '<(mozc_oss_src_dir)/base/base.gyp:base',
         '<(mozc_oss_src_dir)/ipc/ipc.gyp:ipc',
         '<(mozc_oss_src_dir)/protocol/protocol.gyp:commands_proto',
-        '<(mozc_oss_src_dir)/usage_stats/usage_stats_base.gyp:usage_stats',
         'gen_post_install_dialog_files',
         'qrc_post_install_dialog',
       ],
@@ -639,6 +638,7 @@
         '<(mozc_oss_src_dir)/base/base.gyp:base',
         '<(mozc_oss_src_dir)/client/client.gyp:client',
         '<(mozc_oss_src_dir)/protocol/protocol.gyp:commands_proto',
+        '<(mozc_oss_src_dir)/protocol/protocol.gyp:renderer_proto',
         '<(mozc_oss_src_dir)/renderer/renderer.gyp:renderer_client',
       ],
     },
@@ -678,6 +678,7 @@
           'dependencies': [
             'gen_mozc_tool_lib_info_plist',
             'prelauncher_lib',
+            '<(mozc_oss_src_dir)/base/base.gyp:base_core',
             '<(mozc_oss_src_dir)/base/base.gyp:breakpad',
           ],
           'link_settings': {

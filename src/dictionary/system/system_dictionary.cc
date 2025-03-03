@@ -50,7 +50,6 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
-#include <limits>
 #include <map>
 #include <memory>
 #include <queue>
@@ -59,12 +58,15 @@
 #include <vector>
 
 #include "absl/container/btree_set.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "base/japanese_util.h"
-#include "base/logging.h"
 #include "base/mmap.h"
+#include "base/strings/unicode.h"
 #include "base/util.h"
 #include "dictionary/dictionary_interface.h"
 #include "dictionary/dictionary_token.h"
@@ -519,8 +521,7 @@ bool SystemDictionary::HasValue(absl::string_view value) const {
 
   // Normalize the value as the key.  This process depends on the
   // implementation of SystemDictionaryBuilder::BuildValueTrie.
-  std::string key;
-  japanese_util::KatakanaToHiragana(value, &key);
+  std::string key = japanese_util::KatakanaToHiragana(value);
 
   std::string encoded_key;
   codec_->EncodeKey(key, &encoded_key);
@@ -961,7 +962,10 @@ void SystemDictionary::LookupExact(absl::string_view key,
   if (callback->OnKey(key) != Callback::TRAVERSE_CONTINUE) {
     return;
   }
-
+  if (callback->OnActualKey(key, key, /* num_expanded= */ 0) !=
+      Callback::TRAVERSE_CONTINUE) {
+    return;
+  }
   // Callback on each token.
   for (TokenDecodeIterator iter(codec_, value_trie_, frequent_pos_, key,
                                 GetTokenArrayPtr(token_array_, key_id));
@@ -1024,7 +1028,7 @@ void SystemDictionary::PopulateReverseLookupCache(absl::string_view str) const {
     lookup_key.clear();
     codec_->EncodeValue(suffix, &lookup_key);
     AddKeyIdsOfAllPrefixes(value_trie_, lookup_key, &id_set);
-    pos += Util::OneCharLen(suffix.data());
+    pos += strings::OneCharLen(suffix.data());
   }
   // Collect tokens for all IDs.
   ScanTokens(id_set, reverse_lookup_cache_.get());
@@ -1050,8 +1054,7 @@ class FilterTokenForRegisterReverseLookupTokensForT13N {
     if (token_info.value_type != TokenInfo::AS_IS_HIRAGANA &&
         token_info.value_type != TokenInfo::AS_IS_KATAKANA) {
       // SAME_AS_PREV_VALUE may be t13n token.
-      tmp_str_.clear();
-      japanese_util::KatakanaToHiragana(token_info.token->value, &tmp_str_);
+      tmp_str_ = japanese_util::KatakanaToHiragana(token_info.token->value);
       if (token_info.token->key != tmp_str_) {
         return false;
       }
@@ -1067,8 +1070,8 @@ class FilterTokenForRegisterReverseLookupTokensForT13N {
 
 void SystemDictionary::RegisterReverseLookupTokensForT13N(
     absl::string_view value, Callback *callback) const {
-  std::string hiragana_value, encoded_key;
-  japanese_util::KatakanaToHiragana(value, &hiragana_value);
+  std::string hiragana_value = japanese_util::KatakanaToHiragana(value);
+  std::string encoded_key;
   codec_->EncodeKey(hiragana_value, &encoded_key);
   RunCallbackOnEachPrefix(key_trie_, value_trie_, token_array_, codec_,
                           frequent_pos_, hiragana_value.data(), encoded_key,

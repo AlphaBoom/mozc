@@ -27,7 +27,9 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#include <cstddef>
 #include <iostream>  // NOLINT
+#include <memory>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -43,13 +45,12 @@ ABSL_FLAG(std::string, table, "system://romanji-hiragana.tsv",
 int main(int argc, char **argv) {
   mozc::InitMozc(argv[0], &argc, &argv);
 
-  mozc::composer::Table table;
-  table.LoadFromFile(absl::GetFlag(FLAGS_table).c_str());
+  auto table = std::make_shared<mozc::composer::Table>();
+  table->LoadFromFile(absl::GetFlag(FLAGS_table).c_str());
 
-  mozc::composer::Composition composition(&table);
+  mozc::composer::Composition composition(table);
 
   std::string command;
-  std::string result;
   size_t pos = 0;
 
   while (std::getline(std::cin, command)) {
@@ -65,7 +66,6 @@ int main(int argc, char **argv) {
     } else {
       pos = composition.InsertAt(pos, command);
     }
-    composition.GetString(&result);
-    std::cout << result << " : " << pos << std::endl;
+    std::cout << composition.GetString() << " : " << pos << std::endl;
   }
 }

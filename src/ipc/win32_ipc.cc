@@ -41,12 +41,13 @@
 #include <string>
 #include <utility>
 
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "base/const.h"
 #include "base/cpu_stats.h"
-#include "base/logging.h"
 #include "base/singleton.h"
 #include "base/system_util.h"
 #include "base/util.h"
@@ -402,7 +403,6 @@ IPCErrorType RecvIpcMessage(HANDLE device_handle, HANDLE read_wait_handle,
       return IPC_READ_ERROR;
     }
     // Actually this is an async operation. Let's wait for its completion.
-    bool has_more_data = false;
     const IPCErrorType result = SafeWaitOverlappedResult(
         device_handle, nullptr, absl::ToInt64Milliseconds(timeout), &overlapped,
         &num_bytes_read, read_type_ack);

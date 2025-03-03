@@ -30,7 +30,14 @@
 #ifndef MOZC_CONVERTER_CONVERTER_MOCK_H_
 #define MOZC_CONVERTER_CONVERTER_MOCK_H_
 
+#include <cstddef>
+#include <cstdint>
+
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "converter/converter_interface.h"
+#include "converter/segments.h"
+#include "request/conversion_request.h"
 #include "testing/gmock.h"
 
 namespace mozc {
@@ -40,39 +47,22 @@ class StrictMockConverter : public ConverterInterface {
   StrictMockConverter() = default;
   ~StrictMockConverter() override = default;
 
-  MOCK_METHOD(bool, StartConversionForRequest,
+  MOCK_METHOD(bool, StartConversion,
               (const ConversionRequest &request, Segments *segments),
               (const, override));
-  MOCK_METHOD(bool, StartConversion,
-              (Segments * segments, absl::string_view key), (const, override));
   MOCK_METHOD(bool, StartReverseConversion,
               (Segments * segments, absl::string_view key), (const, override));
-  MOCK_METHOD(bool, StartPredictionForRequest,
-              (const ConversionRequest &request, Segments *segments),
-              (const, override));
   MOCK_METHOD(bool, StartPrediction,
-              (Segments * segments, absl::string_view key), (const, override));
-  MOCK_METHOD(bool, StartSuggestionForRequest,
               (const ConversionRequest &request, Segments *segments),
               (const, override));
-  MOCK_METHOD(bool, StartSuggestion,
-              (Segments * segments, absl::string_view key), (const, override));
-  MOCK_METHOD(bool, StartPartialPredictionForRequest,
-              (const ConversionRequest &request, Segments *segments),
-              (const, override));
-  MOCK_METHOD(bool, StartPartialPrediction,
-              (Segments * segments, absl::string_view key), (const, override));
-  MOCK_METHOD(bool, StartPartialSuggestionForRequest,
-              (const ConversionRequest &request, Segments *segments),
-              (const, override));
-  MOCK_METHOD(bool, StartPartialSuggestion,
-              (Segments * segments, absl::string_view key), (const, override));
   MOCK_METHOD(void, FinishConversion,
               (const ConversionRequest &request, Segments *segments),
               (const, override));
   MOCK_METHOD(void, CancelConversion, (Segments * segments), (const, override));
   MOCK_METHOD(void, ResetConversion, (Segments * segments), (const, override));
   MOCK_METHOD(void, RevertConversion, (Segments * segments), (const, override));
+  MOCK_METHOD(bool, DeleteCandidateFromHistory, (const Segments &, size_t, int),
+              (const));
   MOCK_METHOD(bool, ReconstructHistory,
               (Segments * segments, absl::string_view preceding_text),
               (const, override));
@@ -88,15 +78,15 @@ class StrictMockConverter : public ConverterInterface {
               (Segments * segments, size_t segment_index, int candidate_index),
               (const, override));
   MOCK_METHOD(bool, CommitSegments,
-              (Segments * segments, const std::vector<size_t> &candidate_index),
+              (Segments * segments, absl::Span<const size_t> candidate_index),
               (const, override));
   MOCK_METHOD(bool, ResizeSegment,
               (Segments * segments, const ConversionRequest &request,
                size_t segment_index, int offset_length),
               (const, override));
-  MOCK_METHOD(bool, ResizeSegment,
+  MOCK_METHOD(bool, ResizeSegments,
               (Segments * segments, const ConversionRequest &request,
-               size_t start_segment_index, size_t segments_size,
+               size_t start_segment_index,
                absl::Span<const uint8_t> new_size_array),
               (const, override));
 };

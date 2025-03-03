@@ -37,11 +37,11 @@
 #include <string>
 
 #include "absl/base/thread_annotations.h"
+#include "absl/log/log.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "base/clock.h"
-#include "base/logging.h"
 #include "base/process.h"
 #include "base/system_util.h"
 #include "base/thread.h"
@@ -106,6 +106,13 @@ class RendererLauncher : public RendererLauncherInterface {
       const std::string &name, const std::string &path,
       bool disable_renderer_path_check,
       IPCClientFactoryInterface *ipc_client_factory_interface) override {
+    if (Status() == RendererStatus::RENDERER_LAUNCHING ||
+        Status() == RendererStatus::RENDERER_READY ||
+        Status() == RendererStatus::RENDERER_TIMEOUT) {
+      // Renderer is already launching.
+      // The renderer is still up and running when in the pending command state.
+      return;
+    }
     SetStatus(RendererStatus::RENDERER_LAUNCHING);
     name_ = name;
     path_ = path;
@@ -451,7 +458,7 @@ bool RendererClient::ExecCommand(const commands::RendererCommand &command) {
     return true;
   }
 
-  MOZC_VLOG(2) << "Sending: " << MOZC_LOG_PROTOBUF(command);
+  MOZC_VLOG(2) << "Sending: " << command;
 
   std::unique_ptr<IPCClientInterface> client(CreateIPCClient());
 

@@ -37,10 +37,11 @@
 #include <vector>
 
 #include "absl/flags/flag.h"
+#include "absl/log/log.h"
 #include "engine/engine_factory.h"
 #include "protocol/commands.pb.h"
+#include "request/request_test_util.h"
 #include "session/random_keyevents_generator.h"
-#include "session/request_test_util.h"
 #include "session/session_handler_tool.h"
 #include "testing/gunit.h"
 #include "testing/mozctest.h"
@@ -75,7 +76,7 @@ class SessionHandlerStressTest
     if (absl::GetFlag(FLAGS_set_mobile_request)) {
       commands::Output output;
       commands::Request request;
-      commands::RequestForUnitTest::FillMobileRequest(&request);
+      request_test_util::FillMobileRequest(&request);
       client_.SetRequest(request, &output);
     }
   }

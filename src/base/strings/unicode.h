@@ -39,7 +39,9 @@
 #include <utility>
 
 #include "absl/base/attributes.h"
+#include "absl/base/nullability.h"
 #include "absl/base/optimization.h"
+#include "absl/log/check.h"
 #include "absl/strings/string_view.h"
 #include "base/strings/internal/utf8_internal.h"
 
@@ -123,37 +125,87 @@ std::string Utf32ToUtf8(std::u32string_view sv);
 
 // Appends a single Unicode character represented by a char32_t code point to
 // dest.
-inline void StrAppendChar32(std::string* dest, const char32_t cp) {
+inline void StrAppendChar32(absl::Nonnull<std::string*> dest,
+                            const char32_t cp) {
   const utf8_internal::EncodeResult ec = utf8_internal::Encode(cp);
   // basic_string::append() is faster than absl::StrAppend() here.
   dest->append(ec.data(), ec.size());
 }
 
+// Converts a single Unicode character by a char32_t code point to UTF-8.
+inline std::string Char32ToUtf8(const char32_t cp) {
+  std::string result;
+  StrAppendChar32(&result, cp);
+  return result;
+}
+
 // Returns a substring of the UTF-8 string sv [pos, pos + count), or [pos,
 // sv.end()) if count is not provided, by the number of Unicode characters. The
-// result is clipped if pos + count > CharsLen().
+// result is clipped if pos + count > [number of Unicode characters in sv].
 //
 // Note that this function is linear and slower than Utf8AsChars::Substring as
 // it needs to traverse through each character. Use Utf8AsChars::Substring if
 // you already have the character iterators.
 //
-// REQUIRES: The UTF-8 string is valid. pos <= CharsLen(sv).
-// Complexity: linear to pos + count or pos if count it not provided.
+// REQUIRES: pos <= [number of Unicode characters in sv].
+// Complexity: linear to pos + count, or pos if count it not provided.
 absl::string_view Utf8Substring(absl::string_view sv, size_t pos);
 absl::string_view Utf8Substring(absl::string_view sv, size_t pos, size_t count);
 
 }  // namespace strings
 
+// Represents both a UTF-8 string and its decoded result.
+class UnicodeChar {
+ public:
+  UnicodeChar(const char* utf8, bool ok, const uint_fast8_t bytes_seen,
+              char32_t codepoint)
+      : utf8_(utf8), dr_(GetDecodeResult(ok, bytes_seen, codepoint)) {}
+  UnicodeChar(const char* utf8, const uint_fast8_t bytes_seen,
+              char32_t codepoint)
+      : mozc::UnicodeChar(utf8, /*ok=*/true, bytes_seen, codepoint) {}
+
+  UnicodeChar(const UnicodeChar&) = default;
+  UnicodeChar& operator=(const UnicodeChar&) = default;
+
+  char32_t char32() const { return dr_.code_point(); }
+  absl::string_view utf8() const {
+    return absl::string_view(utf8_, dr_.bytes_seen());
+  }
+
+  // Returns if the current character has a valid UTF-8 encoding.
+  //
+  // Most of the time, it's not necessary to explicitly call this function as
+  // invalid characters are replaced with U+FFFD when the iterator is
+  // dereferenced. Use this if you need to distinguish decoding errors from
+  // U+FFFD in the source string when processing untrusted UTF-8 inputs.
+  bool ok() const { return dr_.ok(); }
+
+ private:
+  static utf8_internal::DecodeResult GetDecodeResult(
+      bool ok, const uint_fast8_t bytes_seen, char32_t codepoint) {
+    if (ok) {
+      return utf8_internal::DecodeResult::Continue(codepoint, bytes_seen);
+    }
+    if (bytes_seen) {
+      return utf8_internal::DecodeResult::Error(bytes_seen);
+    }
+    return utf8_internal::DecodeResult::Sentinel();
+  }
+
+  const char* utf8_;
+  utf8_internal::DecodeResult dr_;
+};
+
 // Utf8CharIterator is an iterator adapter for a string-like iterator to iterate
 // over each UTF-8 character.
 // Note that the simple dereference returns the underlying StringIterator value.
 // Use one of the member functions to access each character.
-template <bool AsChar32>
+template <typename ValueType>
 class Utf8CharIterator {
  public:
   using difference_type =
       typename std::iterator_traits<const char*>::difference_type;
-  using value_type = std::conditional_t<AsChar32, char32_t, absl::string_view>;
+  using value_type = ValueType;
   using pointer = const value_type*;
   // The reference type can be non-reference for input iterators.
   using reference = value_type;
@@ -172,16 +224,11 @@ class Utf8CharIterator {
   Utf8CharIterator& operator=(const Utf8CharIterator&) = default;
 
   // Returns the current character.
-  reference operator*() const {
-    if constexpr (AsChar32) {
-      return char32();
-    } else {
-      return view();
-    }
-  }
+  reference operator*() const;
 
   // Moves the iterator to the next Unicode character.
   Utf8CharIterator& operator++() {
+    DCHECK(!dr_.IsSentinel());
     ptr_ += dr_.bytes_seen();
     Decode();
     return *this;
@@ -193,10 +240,14 @@ class Utf8CharIterator {
   }
 
   // Returns the code point of the current character as char32_t.
-  char32_t char32() const { return dr_.code_point(); }
+  char32_t char32() const {
+    DCHECK(!dr_.IsSentinel());
+    return dr_.code_point();
+  }
 
   // Returns the UTF-8 string of the current character as absl::string_view.
   absl::string_view view() const {
+    DCHECK(!dr_.IsSentinel());
     return absl::string_view(ptr_, dr_.bytes_seen());
   }
 
@@ -218,18 +269,14 @@ class Utf8CharIterator {
   // another iterator last.
   //
   // REQUIRES: last points to the same string object.
-  template <bool AsChar32Last>
+  template <typename LastValueType>
   absl::string_view SubstringTo(
-      const Utf8CharIterator<AsChar32Last> last) const {
+      const Utf8CharIterator<LastValueType> last) const {
     return absl::string_view(ptr_, last.ptr_ - ptr_);
   }
 
  private:
-  void Decode() {
-    if (ptr_ != last_) {
-      dr_ = utf8_internal::Decode(ptr_, last_);
-    }
-  }
+  void Decode() { dr_ = utf8_internal::Decode(ptr_, last_); }
 
   // TODO(yuryu): Use a contiguous iterator instead in C++20.
   const char* ptr_;
@@ -238,14 +285,14 @@ class Utf8CharIterator {
 };
 
 // Comparison operators for Utf8CharIterator.
-template <bool AsChar32L, bool AsChar32R>
-bool operator==(const Utf8CharIterator<AsChar32L> lhs,
-                const Utf8CharIterator<AsChar32R> rhs) {
+template <typename TLhs, typename TRhs>
+bool operator==(const Utf8CharIterator<TLhs> lhs,
+                const Utf8CharIterator<TRhs> rhs) {
   return lhs.to_address() == rhs.to_address();
 }
-template <bool AsChar32L, bool AsChar32R>
-bool operator!=(const Utf8CharIterator<AsChar32L> lhs,
-                const Utf8CharIterator<AsChar32R> rhs) {
+template <typename TLhs, typename TRhs>
+bool operator!=(const Utf8CharIterator<TLhs> lhs,
+                const Utf8CharIterator<TRhs> rhs) {
   return !(lhs == rhs);
 }
 
@@ -261,16 +308,16 @@ bool operator!=(const Utf8CharIterator<AsChar32L> lhs,
 // size, however, this class will mostly be used to just iterate over each
 // character once, so it'd be inefficient to iterate over the same string twice.
 // Therefore, it doesn't have the size() member function.
-template <bool AsChar32>
+template <typename ValueType>
 class Utf8AsCharsBase {
  public:
   using StringViewT = absl::string_view;
   using CharT = StringViewT::value_type;
 
-  using value_type = std::conditional_t<AsChar32, char32_t, absl::string_view>;
+  using value_type = ValueType;
   using reference = value_type&;
   using const_reference = const value_type&;
-  using iterator = Utf8CharIterator<AsChar32>;
+  using iterator = Utf8CharIterator<ValueType>;
   using const_iterator = iterator;
   using difference_type = StringViewT::difference_type;
   using size_type = StringViewT::size_type;
@@ -295,9 +342,9 @@ class Utf8AsCharsBase {
   // can be different among first, last, and the constructed class.
   //
   // Complexity: constant
-  template <bool AsChar32First, bool AsChar32Last>
-  Utf8AsCharsBase(const Utf8CharIterator<AsChar32First> first,
-                  const Utf8CharIterator<AsChar32Last> last)
+  template <typename TFirst, typename TLast>
+  Utf8AsCharsBase(const Utf8CharIterator<TFirst> first,
+                  const Utf8CharIterator<TLast> last)
       : sv_(first.to_address(), last.to_address() - first.to_address()) {}
 
   // Construction from a null pointer is disallowed.
@@ -339,13 +386,13 @@ class Utf8AsCharsBase {
   // complexity.
   //
   // Complexity: constant
-  template <bool AsChar32First>
-  StringViewT Substring(const Utf8CharIterator<AsChar32First> first) const {
+  template <typename TFirst>
+  StringViewT Substring(const Utf8CharIterator<TFirst> first) const {
     return first.SubstringTo(end());
   }
-  template <bool AsChar32First, bool AsChar32Last>
-  StringViewT Substring(const Utf8CharIterator<AsChar32First> first,
-                        const Utf8CharIterator<AsChar32Last> last) const {
+  template <typename TFirst, typename TLast>
+  StringViewT Substring(const Utf8CharIterator<TFirst> first,
+                        const Utf8CharIterator<TLast> last) const {
     return first.SubstringTo(last);
   }
 
@@ -364,34 +411,34 @@ class Utf8AsCharsBase {
 
 // Bitwise comparison operators that compare two Utf8AsCharBase using the
 // underlying string_view comparators.
-template <bool AsChar32L, bool AsChar32R>
-bool operator==(const Utf8AsCharsBase<AsChar32L> lhs,
-                const Utf8AsCharsBase<AsChar32R> rhs) {
+template <typename TLhs, typename TRhs>
+bool operator==(const Utf8AsCharsBase<TLhs> lhs,
+                const Utf8AsCharsBase<TRhs> rhs) {
   return lhs.view() == rhs.view();
 }
-template <bool AsChar32L, bool AsChar32R>
-bool operator!=(const Utf8AsCharsBase<AsChar32L> lhs,
-                const Utf8AsCharsBase<AsChar32R> rhs) {
+template <typename TLhs, typename TRhs>
+bool operator!=(const Utf8AsCharsBase<TLhs> lhs,
+                const Utf8AsCharsBase<TRhs> rhs) {
   return lhs.view() != rhs.view();
 }
-template <bool AsChar32L, bool AsChar32R>
-bool operator<(const Utf8AsCharsBase<AsChar32L> lhs,
-               const Utf8AsCharsBase<AsChar32R> rhs) {
+template <typename TLhs, typename TRhs>
+bool operator<(const Utf8AsCharsBase<TLhs> lhs,
+               const Utf8AsCharsBase<TRhs> rhs) {
   return lhs.view() < rhs.view();
 }
-template <bool AsChar32L, bool AsChar32R>
-bool operator<=(const Utf8AsCharsBase<AsChar32L> lhs,
-                const Utf8AsCharsBase<AsChar32R> rhs) {
+template <typename TLhs, typename TRhs>
+bool operator<=(const Utf8AsCharsBase<TLhs> lhs,
+                const Utf8AsCharsBase<TRhs> rhs) {
   return lhs.view() <= rhs.view();
 }
-template <bool AsChar32L, bool AsChar32R>
-bool operator>=(const Utf8AsCharsBase<AsChar32L> lhs,
-                const Utf8AsCharsBase<AsChar32R> rhs) {
+template <typename TLhs, typename TRhs>
+bool operator>=(const Utf8AsCharsBase<TLhs> lhs,
+                const Utf8AsCharsBase<TRhs> rhs) {
   return lhs.view() >= rhs.view();
 }
-template <bool AsChar32L, bool AsChar32R>
-bool operator>(const Utf8AsCharsBase<AsChar32L> lhs,
-               const Utf8AsCharsBase<AsChar32R> rhs) {
+template <typename TLhs, typename TRhs>
+bool operator>(const Utf8AsCharsBase<TLhs> lhs,
+               const Utf8AsCharsBase<TRhs> rhs) {
   return lhs.view() > rhs.view();
 }
 
@@ -413,7 +460,7 @@ bool operator>(const Utf8AsCharsBase<AsChar32L> lhs,
 //  std::vector<char32_t> v;
 //  absl::c_copy(Utf8AsChars32(sv), std::back_inserter(s32));
 //  absl::c_copy(Utf8AsChars32(sv), std::back_inserter(v));
-using Utf8AsChars32 = Utf8AsCharsBase<true>;
+using Utf8AsChars32 = Utf8AsCharsBase<char32_t>;
 
 // Utf8AsChars is a wrapper to iterator a UTF-8 string over each character as
 // substrings. Characters with invalid encodings are returned as they are.
@@ -430,7 +477,21 @@ using Utf8AsChars32 = Utf8AsCharsBase<true>;
 // const absl::string_view sv = ...;
 // std::vector<absl::string_view> v;
 // absl::c_copy(Utf8AsChars(sv), std::back_inserter(v));
-using Utf8AsChars = Utf8AsCharsBase<false>;
+using Utf8AsChars = Utf8AsCharsBase<absl::string_view>;
+
+// Utf8AsUnicodeChar is similar to Utf8AsChars32 and Utf8AsChars above, except
+// that it can provide both char32_t code points and its UTF-8 sub-strings.
+//
+// When both aren't needed, Utf8AsChars32 and Utf8AsChars are more efficient.
+//
+// Example:
+//  bool Func(const absl::string_view sv) {
+//    for (const UnicodeChar c : Utf8AsUnicodeChar(sv)) {
+//      std::cout << c.utf8() >> " --> " << c.char32();
+//    }
+//    ...
+//  }
+using Utf8AsUnicodeChar = Utf8AsCharsBase<UnicodeChar>;
 
 // Implementations.
 namespace strings {
@@ -467,16 +528,31 @@ constexpr std::pair<absl::string_view, absl::string_view> FrontChar(
 
 }  // namespace strings
 
-template <bool AsChar32>
-typename Utf8AsCharsBase<AsChar32>::value_type Utf8AsCharsBase<AsChar32>::back()
-    const {
+template <typename ValueType>
+typename Utf8CharIterator<ValueType>::reference
+Utf8CharIterator<ValueType>::operator*() const {
+  DCHECK(!dr_.IsSentinel());
+  if constexpr (std::is_same_v<ValueType, char32_t>) {
+    return char32();
+  } else if constexpr (std::is_same_v<ValueType, absl::string_view>) {
+    return view();
+  } else if constexpr (std::is_same_v<ValueType, UnicodeChar>) {
+    return ValueType{ptr_, dr_.ok(), dr_.bytes_seen(), dr_.code_point()};
+  }
+}
+
+template <typename ValueType>
+typename Utf8AsCharsBase<ValueType>::value_type
+Utf8AsCharsBase<ValueType>::back() const {
   const char* const last = EndPtr();
   if (sv_.back() <= 0x7f) {
     // ASCII
-    if constexpr (AsChar32) {
+    if constexpr (std::is_same_v<ValueType, char32_t>) {
       return sv_.back();
-    } else {
+    } else if constexpr (std::is_same_v<ValueType, absl::string_view>) {
       return value_type(last - 1, 1);
+    } else if constexpr (std::is_same_v<ValueType, UnicodeChar>) {
+      return value_type{last - 1, 1, sv_.back()};
     }
   }
   // Other patterns. UTF-8 characters are at most four bytes long.
@@ -487,10 +563,12 @@ typename Utf8AsCharsBase<AsChar32>::value_type Utf8AsCharsBase<AsChar32>::back()
       const char* const ptr = last - size;
       const utf8_internal::DecodeResult dr = utf8_internal::Decode(ptr, last);
       if (dr.bytes_seen() == size) {
-        if constexpr (AsChar32) {
+        if constexpr (std::is_same_v<ValueType, char32_t>) {
           return dr.code_point();
-        } else {
+        } else if constexpr (std::is_same_v<ValueType, absl::string_view>) {
           return value_type(ptr, dr.bytes_seen());
+        } else if constexpr (std::is_same_v<ValueType, UnicodeChar>) {
+          return value_type{ptr, dr.bytes_seen(), dr.code_point()};
         }
       }
     }

@@ -35,11 +35,10 @@
 #include <string>
 
 #include "absl/flags/flag.h"
+#include "absl/log/log.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
-#include "base/const.h"
-#include "base/logging.h"
 #include "base/system_util.h"
 #include "base/vlog.h"
 #include "client/client_interface.h"
@@ -54,6 +53,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+
+#include "base/const.h"
 #include "base/win32/win_util.h"
 #endif  // _WIN32
 
@@ -97,30 +98,9 @@ class RendererServerSendCommand : public client::SendCommandInterface {
                    mozc::commands::Output *output) override {
 #ifdef _WIN32
     if ((command.type() != commands::SessionCommand::SELECT_CANDIDATE) &&
-        (command.type() != commands::SessionCommand::HIGHLIGHT_CANDIDATE) &&
-        (command.type() != commands::SessionCommand::USAGE_STATS_EVENT)) {
+        (command.type() != commands::SessionCommand::HIGHLIGHT_CANDIDATE)) {
       // Unsupported command.
       return false;
-    }
-
-    HWND target = WinUtil::DecodeWindowHandle(receiver_handle_);
-    if (target == nullptr) {
-      LOG(ERROR) << "target window is nullptr";
-      return false;
-    }
-    UINT mozc_msg = ::RegisterWindowMessageW(kMessageReceiverMessageName);
-    if (mozc_msg == 0) {
-      LOG(ERROR) << "RegisterWindowMessage failed: " << ::GetLastError();
-      return false;
-    }
-    if (command.type() == mozc::commands::SessionCommand::USAGE_STATS_EVENT) {
-      WPARAM type = static_cast<WPARAM>(command.type());
-      LPARAM event = static_cast<LPARAM>(command.usage_stats_event());
-      ::PostMessage(target, mozc_msg, type, event);
-    } else {  // SELECT_CANDIDATE or HIGHLIGHT_CANDIDATE
-      WPARAM type = static_cast<WPARAM>(command.type());
-      LPARAM id = static_cast<LPARAM>(command.id());
-      ::PostMessage(target, mozc_msg, type, id);
     }
 #endif  // _WIN32
 
@@ -163,15 +143,13 @@ RendererServer::RendererServer()
                   std::min(absl::GetFlag(FLAGS_timeout), 60));
   }
 
-  timeout_ =
-      1000 * std::max(3, std::min(24 * 60 * 60, absl::GetFlag(FLAGS_timeout)));
+  timeout_ = 1000 * std::clamp(absl::GetFlag(FLAGS_timeout), 3, 24 * 60 * 60);
   MOZC_VLOG(2) << "timeout is set to be : " << timeout_;
 
-#ifndef MOZC_NO_LOGGING
-  config::Config config;
-  config::ConfigHandler::GetConfig(&config);
-  mozc::internal::SetConfigVLogLevel(config.verbose_level());
-#endif  // MOZC_NO_LOGGING
+#ifndef NDEBUG
+  mozc::internal::SetConfigVLogLevel(
+      config::ConfigHandler::GetSharedConfig()->verbose_level());
+#endif  // NDEBUG
 }
 
 RendererServer::~RendererServer() = default;
@@ -217,7 +195,7 @@ bool RendererServer::ExecCommandInternal(
     return false;
   }
 
-  MOZC_VLOG(2) << MOZC_LOG_PROTOBUF(command);
+  MOZC_VLOG(2) << command;
 
   // Check process info if update mode
   if (command.type() == commands::RendererCommand::UPDATE) {

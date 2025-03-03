@@ -92,6 +92,13 @@ class FileUtil {
   ~FileUtil() = delete;
 
   // Creates a directory. Does not create directories in the way to the path.
+  // If the directory already exists:
+  // - On Windows: returns an error status.
+  // - Others: returns OkStatus and does nothing.
+  //
+  // The above platform dependent behavior is a temporary solution to avoid
+  // freeze of the host application.
+  // https://github.com/google/mozc/issues/1076
   static absl::Status CreateDirectory(const std::string &path);
 
   // Removes an empty directory.
@@ -169,11 +176,6 @@ class FileUtil {
   static absl::StatusOr<FileTimeStamp> GetModificationTime(
       const std::string &filename);
 
-  // Reads the contents of the file `filename` into `output`.
-  static absl::Status GetContents(
-      const std::string &filename, std::string *output,
-      std::ios_base::openmode mode = std::ios::binary);
-
   // Reads the contents of the file `filename` and returns it.
   static absl::StatusOr<std::string> GetContents(
       const std::string &filename,
@@ -187,10 +189,6 @@ class FileUtil {
 
   // Sets a mock for unittest.
   static void SetMockForUnitTest(FileUtilInterface *mock);
-
-  // Make a hard-link or copy of `src_file`.
-  static absl::Status LinkOrCopyFile(const std::string &src_path,
-                                     const std::string &dst_path);
 };
 
 // RAII wrapper for a file. Unlinks the file when this instance goes out of

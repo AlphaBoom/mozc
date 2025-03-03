@@ -31,7 +31,7 @@
 
 #include <string>
 
-#include "base/logging.h"
+#include "absl/log/log.h"
 #include "protocol/commands.pb.h"
 #include "unix/ibus/ibus_wrapper.h"
 
@@ -109,6 +109,8 @@ int CursorPos(const commands::Output &output) {
 bool PreeditHandler::Update(IbusEngineWrapper *engine,
                             const commands::Output &output) {
   if (!output.has_preedit()) {
+    IbusTextWrapper empty_text("");
+    engine->UpdatePreeditTextWithMode(&empty_text, 0);
     engine->HidePreeditText();
     return true;
   }

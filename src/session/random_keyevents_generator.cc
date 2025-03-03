@@ -30,18 +30,19 @@
 #include "session/random_keyevents_generator.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "absl/random/distributions.h"
 #include "absl/random/random.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "base/japanese_util.h"
-#include "base/logging.h"
 #include "base/util.h"
 #include "base/vlog.h"
 #include "protocol/commands.pb.h"
@@ -98,16 +99,16 @@ void RandomKeyEventsGenerator::TypeRawKeys(
     absl::string_view romaji, bool create_probable_key_events,
     std::vector<commands::KeyEvent> *keys) {
   for (ConstChar32Iterator iter(romaji); !iter.Done(); iter.Next()) {
-    const uint32_t ucs4 = iter.Get();
-    if (ucs4 < 0x20 || ucs4 > 0x7F) {
+    const uint32_t codepoint = iter.Get();
+    if (codepoint < 0x20 || codepoint > 0x7F) {
       continue;
     }
     commands::KeyEvent key;
-    key.set_key_code(ucs4);
+    key.set_key_code(codepoint);
     if (create_probable_key_events) {
       commands::KeyEvent::ProbableKeyEvent *probable_key_event =
           key.add_probable_key_event();
-      probable_key_event->set_key_code(ucs4);
+      probable_key_event->set_key_code(codepoint);
       probable_key_event->set_probability(kMostPossibleKeyProbability);
       for (size_t i = 0; i < kProbableKeyEventSize; ++i) {
         commands::KeyEvent::ProbableKeyEvent *probable_key_event =
@@ -123,10 +124,8 @@ void RandomKeyEventsGenerator::TypeRawKeys(
 
 // Converts from Hiragana to Romaji.
 std::string ToRomaji(absl::string_view hiragana) {
-  std::string tmp, result;
-  japanese_util::HiraganaToRomanji(hiragana, &tmp);
-  japanese_util::FullWidthToHalfWidth(tmp, &result);
-  return result;
+  std::string tmp = japanese_util::HiraganaToRomanji(hiragana);
+  return japanese_util::FullWidthToHalfWidth(tmp);
 }
 
 // Generates KeyEvent instances based on |sentence| and stores into |keys|.

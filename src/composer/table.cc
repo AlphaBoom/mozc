@@ -40,16 +40,18 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/no_destructor.h"
+#include "absl/hash/hash.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "base/config_file_stream.h"
 #include "base/hash.h"
-#include "base/logging.h"
 #include "base/util.h"
 #include "composer/internal/special_key.h"
-#include "data_manager/data_manager_interface.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 
@@ -137,9 +139,8 @@ constexpr absl::string_view kSquareOpen = "[";
 constexpr absl::string_view kSquareClose = "]";
 constexpr absl::string_view kMiddleDot = "・";
 
-bool Table::InitializeWithRequestAndConfig(
-    const commands::Request &request, const config::Config &config,
-    const DataManagerInterface &data_manager) {
+bool Table::InitializeWithRequestAndConfig(const commands::Request &request,
+                                           const config::Config &config) {
   case_sensitive_ = false;
   bool result = false;
   if (request.special_romanji_table() !=
@@ -388,8 +389,8 @@ const Entry *Table::AddRuleWithAttributes(
   if (!case_sensitive_) {
     const std::string trimed_input = DeleteSpecialKeys(input);
     for (ConstChar32Iterator iter(trimed_input); !iter.Done(); iter.Next()) {
-      const char32_t ucs4 = iter.Get();
-      if ('A' <= ucs4 && ucs4 <= 'Z') {
+      const char32_t codepoint = iter.Get();
+      if ('A' <= codepoint && codepoint <= 'Z') {
         case_sensitive_ = true;
         break;
       }
@@ -552,12 +553,12 @@ void Table::set_case_sensitive(const bool case_sensitive) {
 }
 
 // static
-const Table &Table::GetDefaultTable() {
-  static Table *default_table = nullptr;
-  if (!default_table) {
-    default_table = new Table();
-  }
-  return *default_table;
+const Table &Table::GetDefaultTable() { return *GetSharedDefaultTable(); }
+
+std::shared_ptr<const Table> Table::GetSharedDefaultTable() {
+  static absl::NoDestructor<std::shared_ptr<const Table>> kDefaultSharedTable(
+      new Table());
+  return *kDefaultSharedTable;
 }
 
 // ========================================
@@ -566,18 +567,13 @@ const Table &Table::GetDefaultTable() {
 TableManager::TableManager()
     : custom_roman_table_fingerprint_(Fingerprint32("")) {}
 
-const Table *TableManager::GetTable(
-    const mozc::commands::Request &request, const mozc::config::Config &config,
-    const mozc::DataManagerInterface &data_manager) {
+std::shared_ptr<const Table> TableManager::GetTable(
+    const mozc::commands::Request &request,
+    const mozc::config::Config &config) {
   // calculate the hash depending on the request and the config
-  uint32_t hash = request.special_romanji_table();
-  hash = hash * (mozc::config::Config_PreeditMethod_PreeditMethod_MAX + 1) +
-         config.preedit_method();
-  hash = hash * (mozc::config::Config_PunctuationMethod_PunctuationMethod_MAX +
-                 1) +
-         config.punctuation_method();
-  hash = hash * (mozc::config::Config_SymbolMethod_SymbolMethod_MAX + 1) +
-         config.symbol_method();
+  const uint32_t hash =
+      absl::HashOf(request.special_romanji_table(), config.preedit_method(),
+                   config.punctuation_method(), config.symbol_method());
 
   // When custom_roman_table is set, force to create new table.
   bool update_custom_roman_table = false;
@@ -591,24 +587,23 @@ const Table *TableManager::GetTable(
     }
   }
 
-  const auto iterator = table_map_.find(hash);
-  if (iterator != table_map_.end()) {
+  if (const auto iterator = table_map_.find(hash);
+      iterator != table_map_.end()) {
     if (update_custom_roman_table) {
       // Delete the previous table to update the table.
       table_map_.erase(iterator);
     } else {
-      return iterator->second.get();
+      return iterator->second;
     }
   }
 
-  auto table = std::make_unique<Table>();
-  if (!table->InitializeWithRequestAndConfig(request, config, data_manager)) {
+  auto table = std::make_shared<Table>();
+  if (!table->InitializeWithRequestAndConfig(request, config)) {
     return nullptr;
   }
 
-  const Table *ret = table.get();
-  table_map_[hash] = std::move(table);
-  return ret;
+  table_map_.emplace(hash, table);
+  return table;
 }
 
 void TableManager::ClearCaches() { table_map_.clear(); }

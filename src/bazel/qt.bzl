@@ -29,7 +29,7 @@
 
 """Qt build rules."""
 
-load("//bazel:stubs.bzl", "register_extension_info")
+load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
 load(
     "//:build_defs.bzl",
     "mozc_cc_binary",
@@ -41,7 +41,7 @@ load(
     "MACOS_BUNDLE_ID_PREFIX",
     "MACOS_MIN_OS_VER",
 )
-load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
+load("//bazel:stubs.bzl", "register_extension_info")
 
 def mozc_cc_qt_library(name, deps = [], **kwargs):
     mozc_cc_library(
@@ -50,12 +50,13 @@ def mozc_cc_qt_library(name, deps = [], **kwargs):
             default = ["//third_party/qt:qt_native"],
             oss_linux = ["@qt_linux//:qt_linux"],
             oss_macos = ["@qt_mac//:qt_mac"],
+            oss_windows = ["@qt_win//:qt_win"],
         ),
         **kwargs
     )
 
 register_extension_info(
-    extension = "mozc_cc_qt_library",
+    extension = mozc_cc_qt_library,
     label_regex_for_dep = "{extension_name}",
 )
 
@@ -66,12 +67,13 @@ def mozc_cc_qt_binary(name, deps = [], **kwargs):
             default = ["//third_party/qt:qt_native"],
             oss_linux = ["@qt_linux//:qt_linux"],
             oss_macos = ["@qt_mac//:qt_mac"],
+            oss_windows = ["@qt_win//:qt_win"],
         ),
         **kwargs
     )
 
 register_extension_info(
-    extension = "mozc_cc_qt_binary",
+    extension = mozc_cc_qt_binary,
     label_regex_for_dep = "{extension_name}",
 )
 
@@ -84,11 +86,13 @@ def mozc_qt_moc(name, srcs, outs):
             default = "$(location //third_party/qt:moc) -p $$(dirname $<) -o $@ $(SRCS)",
             oss_linux = "$(location @qt_linux//:libexec/moc) -p $$(dirname $<) -o $@ $(SRCS)",
             oss_macos = "$(location @qt_mac//:libexec/moc) -p $$(dirname $<) -o $@ $(SRCS)",
+            oss_windows = "$(location @qt_win//:bin/moc.exe) -p $$(dirname $<) -o $@ $(SRCS)",
         ),
         tools = mozc_select(
             default = ["//third_party/qt:moc"],
             oss_linux = ["@qt_linux//:libexec/moc"],
             oss_macos = ["@qt_mac//:libexec/moc"],
+            oss_windows = ["@qt_win//:bin/moc.exe"],
         ),
     )
 
@@ -101,11 +105,13 @@ def mozc_qt_uic(name, srcs, outs):
             default = "$(location //third_party/qt:uic) -o $@ $(SRCS)",
             oss_linux = "$(location @qt_linux//:libexec/uic) -o $@ $(SRCS)",
             oss_macos = "$(location @qt_mac//:libexec/uic) -o $@ $(SRCS)",
+            oss_windows = "$(location @qt_win//:bin/uic.exe) -o $@ $(SRCS)",
         ),
         tools = mozc_select(
             default = ["//third_party/qt:uic"],
             oss_linux = ["@qt_linux//:libexec/uic"],
             oss_macos = ["@qt_mac//:libexec/uic"],
+            oss_windows = ["@qt_win//:bin/uic.exe"],
         ),
     )
 
@@ -118,11 +124,13 @@ def mozc_qt_rcc(name, qrc_name, qrc_file, srcs, outs):
             default = "$(location //third_party/qt:rcc) -o $@ -name " + qrc_name + " " + qrc_file,
             oss_linux = "$(location @qt_linux//:libexec/rcc) -o $@ -name " + qrc_name + " $(location " + qrc_file + ")",
             oss_macos = "$(location @qt_mac//:libexec/rcc) -o $@ -name " + qrc_name + " $(location " + qrc_file + ")",
+            oss_windows = "$(location @qt_win//:bin/rcc.exe) -o $@ -name " + qrc_name + " $(location " + qrc_file + ")",
         ),
         tools = mozc_select(
             default = ["//third_party/qt:rcc"],
             oss_linux = ["@qt_linux//:libexec/rcc"],
             oss_macos = ["@qt_mac//:libexec/rcc"],
+            oss_windows = ["@qt_win//:bin/rcc.exe"],
         ),
     )
 
@@ -159,6 +167,6 @@ def mozc_macos_qt_application(name, bundle_name, deps):
     )
 
 register_extension_info(
-    extension = "mozc_macos_qt_application",
+    extension = mozc_macos_qt_application,
     label_regex_for_dep = "{extension_name}",
 )

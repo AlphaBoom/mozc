@@ -29,6 +29,8 @@
 
 #include "config/stats_config_util.h"
 
+#include "base/singleton.h"
+
 #ifdef _WIN32
 #include <atlbase.h>
 #include <lmcons.h>
@@ -49,19 +51,17 @@
 #include <fstream>
 #include <string>
 
+#include "absl/strings/str_cat.h"
+#include "absl/synchronization/mutex.h"
+#include "base/file_util.h"
 #include "base/mac/mac_util.h"
+#include "base/system_util.h"
 #endif  // __APPLE__
 
 #if defined(__ANDROID__)
 #include "config/config_handler.h"
 #include "protocol/config.pb.h"
 #endif  // __ANDROID__
-
-#include "absl/strings/str_cat.h"
-#include "absl/synchronization/mutex.h"
-#include "base/file_util.h"
-#include "base/singleton.h"
-#include "base/system_util.h"
 
 namespace mozc {
 namespace config {
@@ -90,8 +90,7 @@ bool WinStatsConfigUtilImpl::IsEnabled() {
 #ifdef CHANNEL_DEV
   return true;
 #else   // CHANNEL_DEV
-  const REGSAM sam_desired =
-      KEY_QUERY_VALUE | (SystemUtil::IsWindowsX64() ? KEY_WOW64_32KEY : 0);
+  constexpr REGSAM sam_desired = KEY_QUERY_VALUE | KEY_WOW64_32KEY;
   // Like the crash handler, check the "ClientStateMedium" key first.
   // Then we check "ClientState" key.
   {
@@ -132,8 +131,7 @@ bool WinStatsConfigUtilImpl::SetEnabled(bool val) {
 #endif  // CHANNEL_DEV
 
   ATL::CRegKey key;
-  const REGSAM sam_desired =
-      KEY_WRITE | (SystemUtil::IsWindowsX64() ? KEY_WOW64_32KEY : 0);
+  constexpr REGSAM sam_desired = KEY_WRITE | KEY_WOW64_32KEY;
   LONG result = key.Create(HKEY_LOCAL_MACHINE, kOmahaUsageKey, REG_NONE,
                            REG_OPTION_NON_VOLATILE, sam_desired);
   if (ERROR_SUCCESS != result) {
@@ -223,9 +221,7 @@ bool MacStatsConfigUtilImpl::SetEnabled(bool val) {
 class AndroidStatsConfigUtilImpl : public StatsConfigUtilInterface {
  public:
   bool IsEnabled() override {
-    Config config;
-    ConfigHandler::GetConfig(&config);
-    return config.general_config().upload_usage_stats();
+    return ConfigHandler::GetSharedConfig()->upload_usage_stats();
   }
   bool SetEnabled(bool val) override {
     // TODO(horo): Implement this.

@@ -37,12 +37,12 @@
 #include <memory>
 #include <string>
 
+#include "absl/log/log.h"
 #include "absl/random/random.h"
 #include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
 #include "base/config_file_stream.h"
-#include "base/logging.h"
-#include "base/protobuf/repeated_field.h"
+#include "base/protobuf/repeated_ptr_field.h"
 #include "base/strings/japanese.h"
 #include "base/strings/unicode.h"
 #include "base/vlog.h"
@@ -111,20 +111,11 @@ bool UserDictionaryUtil::IsValidReading(const absl::string_view reading) {
   return InternalValidateNormalizedReading(NormalizeReading(reading));
 }
 
-void UserDictionaryUtil::NormalizeReading(const absl::string_view input,
-                                          std::string *output) {
-  output->clear();
-  std::string tmp1, tmp2;
-  japanese::FullWidthAsciiToHalfWidthAscii(input, &tmp1);
-  japanese::HalfWidthKatakanaToFullWidthKatakana(tmp1, &tmp2);
-  japanese::KatakanaToHiragana(tmp2, output);
-}
-
 std::string UserDictionaryUtil::NormalizeReading(
     const absl::string_view input) {
-  std::string output;
-  NormalizeReading(input, &output);
-  return output;
+  std::string tmp1 = japanese::FullWidthAsciiToHalfWidthAscii(input);
+  std::string tmp2 = japanese::HalfWidthKatakanaToFullWidthKatakana(tmp1);
+  return japanese::KatakanaToHiragana(tmp2);
 }
 
 UserDictionaryCommandStatus::Status UserDictionaryUtil::ValidateEntry(

@@ -37,7 +37,6 @@
 #include <istream>
 #include <memory>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
@@ -45,7 +44,6 @@
 #include "absl/strings/string_view.h"
 #include "base/container/trie.h"
 #include "composer/internal/special_key.h"
-#include "data_manager/data_manager_interface.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 
@@ -94,8 +92,7 @@ class Table final {
   Table &operator=(const Table &) = delete;
 
   bool InitializeWithRequestAndConfig(const commands::Request &request,
-                                      const config::Config &config,
-                                      const DataManagerInterface &data_manager);
+                                      const config::Config &config);
 
   // Return true if adding the input-pending pair makes a loop of
   // conversion rules.
@@ -135,6 +132,9 @@ class Table final {
   // Return the default table.
   static const Table &GetDefaultTable();
 
+  // Return the default shared table.
+  static std::shared_ptr<const Table> GetSharedDefaultTable();
+
  private:
   friend class TypingCorrectorTest;
   friend class TypingCorrectionTest;
@@ -159,10 +159,9 @@ class TableManager {
   TableManager();
   ~TableManager() = default;
   // Return Table for the request and the config
-  // TableManager has ownership of the return value;
-  const Table *GetTable(const commands::Request &request,
-                        const config::Config &config,
-                        const DataManagerInterface &data_manager);
+  // Return nullptr when no Table is available.
+  std::shared_ptr<const Table> GetTable(const commands::Request &request,
+                                        const config::Config &config);
 
   void ClearCaches();
 
@@ -173,7 +172,7 @@ class TableManager {
   //  config::Config::PreeditMethod
   //  config::Config::PunctuationMethod
   //  config::Config::SymbolMethod
-  absl::flat_hash_map<uint32_t, std::unique_ptr<const Table>> table_map_;
+  absl::flat_hash_map<uint32_t, std::shared_ptr<const Table>> table_map_;
   // Fingerprint for Config::custom_roman_table;
   uint32_t custom_roman_table_fingerprint_;
 };

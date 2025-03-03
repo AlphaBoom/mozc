@@ -29,19 +29,18 @@
 
 #include "gui/base/setup_util.h"
 
-#ifdef _WIN32
-#include <algorithm>
-#endif  // _WIN32
 #include <cstdint>
 
-#include "base/logging.h"
 #include "dictionary/user_dictionary_storage.h"
 #include "dictionary/user_dictionary_util.h"
+
 #ifdef _WIN32
+#include <algorithm>
+
+#include "absl/log/log.h"
 #include "dictionary/user_dictionary_importer.h"
 #include "gui/base/msime_user_dictionary_importer.h"
 #include "gui/base/win_util.h"
-#include "usage_stats/usage_stats.h"
 #include "win32/base/imm_util.h"
 #endif  // _WIN32
 
@@ -65,10 +64,7 @@ bool SetupUtil::IsUserDictionaryLocked() const {
 void SetupUtil::SetDefaultProperty(uint32_t flags) {
 #ifdef _WIN32
   if (flags & IME_DEFAULT) {
-    mozc::usage_stats::UsageStats::IncrementCount("PostInstallSetDefault");
     win32::ImeUtil::SetDefault();
-  } else {
-    mozc::usage_stats::UsageStats::IncrementCount("PostInstallNotSetDefault");
   }
 
   if (flags & DISABLE_HOTKEY) {

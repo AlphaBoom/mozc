@@ -138,7 +138,7 @@
         'defines': [
           'NDEBUG',
           'QT_NO_DEBUG',
-          'MOZC_NO_LOGGING',
+          'ABSL_MIN_LOG_LEVEL=100',
           'IGNORE_HELP_FLAG',
           'IGNORE_INVALID_FLAG'
         ],
@@ -221,17 +221,8 @@
           # <unordered_map> and <unordered_set>.
           '-Wno-deprecated',
         ],
-        'conditions': [
-          ['target_platform=="Linux"', {
-            # OS_LINUX is defined always (target and host).
-            'defines': ['OS_LINUX',],
-          }],
-        ],
       }],
       ['OS=="mac"', {
-        'defines': [
-          '__APPLE__',
-        ],
         'make_global_settings': [
           ['CC', '/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang'],
           ['CXX', '/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++'],

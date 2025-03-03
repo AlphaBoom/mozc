@@ -30,39 +30,38 @@
 #include "converter/converter.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
-#include <vector>
 
+#include "absl/base/optimization.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "base/japanese_util.h"
-#include "base/logging.h"
-#include "base/strings/assign.h"
 #include "base/util.h"
 #include "base/vlog.h"
 #include "composer/composer.h"
+#include "converter/history_reconstructor.h"
 #include "converter/immutable_converter_interface.h"
+#include "converter/reverse_converter.h"
 #include "converter/segments.h"
 #include "dictionary/pos_matcher.h"
 #include "dictionary/suppression_dictionary.h"
+#include "engine/modules.h"
 #include "prediction/predictor_interface.h"
 #include "protocol/commands.pb.h"
 #include "request/conversion_request.h"
 #include "rewriter/rewriter_interface.h"
 #include "transliteration/transliteration.h"
-#include "usage_stats/usage_stats.h"
 
 namespace mozc {
 namespace {
-
-using ::mozc::dictionary::PosMatcher;
-using ::mozc::dictionary::SuppressionDictionary;
-using ::mozc::prediction::PredictorInterface;
-using ::mozc::usage_stats::UsageStats;
 
 constexpr size_t kErrorIndex = static_cast<size_t>(-1);
 
@@ -75,28 +74,13 @@ size_t GetSegmentIndex(const Segments *segments, size_t segment_index) {
   return result;
 }
 
-void SetKey(Segments *segments, const absl::string_view key) {
-  segments->set_max_history_segments_size(4);
-  segments->clear_conversion_segments();
-
-  mozc::Segment *seg = segments->add_segment();
-  DCHECK(seg);
-
-  seg->set_key(key);
-  seg->set_segment_type(mozc::Segment::FREE);
-
-  MOZC_VLOG(2) << segments->DebugString();
-}
-
-bool ShouldSetKeyForPrediction(const ConversionRequest &request,
-                               const absl::string_view key,
-                               const Segments &segments) {
-  // (1) If should_call_set_key_in_prediction is true, invoke SetKey.
-  // (2) If the segment size is 0, invoke SetKey because the segments is not
+bool ShouldInitSegmentsForPrediction(absl::string_view key,
+                                     const Segments &segments) {
+  // (1) If the segment size is 0, invoke SetKey because the segments is not
   //   correctly prepared.
   //   If the key of the segments differs from the input key,
   //   invoke SetKey because current segments should be completely reset.
-  // (3) Otherwise keep current key and candidates.
+  // (2) Otherwise keep current key and candidates.
   //
   // This SetKey omitting is for mobile predictor.
   // On normal inputting, we are showing suggestion results. When users
@@ -108,269 +92,80 @@ bool ShouldSetKeyForPrediction(const ConversionRequest &request,
   // incomplete input, for example, conversion key is "あ" for the input "a",
   // and will still be "あ" for the input "ak". For avoiding mis-reset of
   // the results, we will reset always for suggestion request type.
-  if (request.should_call_set_key_in_prediction()) {
-    return true;  // SetKey for (1)
-  }
-  if (segments.conversion_segments_size() == 0 ||
-      segments.conversion_segment(0).key() != key) {
-    return true;  // (2)
-  }
-  return false;  // (3)
-}
-
-bool IsMobile(const ConversionRequest &request) {
-  return request.request().zero_query_suggestion() &&
-         request.request().mixed_conversion();
+  return segments.conversion_segments_size() == 0 ||
+         segments.conversion_segment(0).key() != key;
 }
 
 bool IsValidSegments(const ConversionRequest &request,
                      const Segments &segments) {
+  const bool is_mobile = request.request().zero_query_suggestion() &&
+                         request.request().mixed_conversion();
+
   // All segments should have candidate
-  for (size_t i = 0; i < segments.segments_size(); ++i) {
-    if (segments.segment(i).candidates_size() != 0) {
+  for (const Segment &segment : segments) {
+    if (segment.candidates_size() != 0) {
       continue;
     }
     // On mobile, we don't distinguish candidates and meta candidates
     // So it's ok if we have meta candidates even if we don't have candidates
     // TODO(team): we may remove mobile check if other platforms accept
     // meta candidate only segment
-    if (IsMobile(request) && segments.segment(i).meta_candidates_size() != 0) {
+    if (is_mobile && segment.meta_candidates_size() != 0) {
       continue;
     }
     return false;
   }
   return true;
-}
-
-// Extracts the last substring that consists of the same script type.
-// Returns true if the last substring is successfully extracted.
-//   Examples:
-//   - "" -> false
-//   - "x " -> "x" / ALPHABET
-//   - "x  " -> false
-//   - "C60" -> "60" / NUMBER
-//   - "200x" -> "x" / ALPHABET
-//   (currently only NUMBER and ALPHABET are supported)
-bool ExtractLastTokenWithScriptType(const absl::string_view text,
-                                    std::string *last_token,
-                                    Util::ScriptType *last_script_type) {
-  last_token->clear();
-  *last_script_type = Util::SCRIPT_TYPE_SIZE;
-
-  ConstChar32ReverseIterator iter(text);
-  if (iter.Done()) {
-    return false;
-  }
-
-  // Allow one whitespace at the end.
-  if (iter.Get() == ' ') {
-    iter.Next();
-    if (iter.Done()) {
-      return false;
-    }
-    if (iter.Get() == ' ') {
-      return false;
-    }
-  }
-
-  std::vector<char32_t> reverse_last_token;
-  Util::ScriptType last_script_type_found = Util::GetScriptType(iter.Get());
-  for (; !iter.Done(); iter.Next()) {
-    const char32_t w = iter.Get();
-    if ((w == ' ') || (Util::GetScriptType(w) != last_script_type_found)) {
-      break;
-    }
-    reverse_last_token.push_back(w);
-  }
-
-  *last_script_type = last_script_type_found;
-  // TODO(yukawa): Replace reverse_iterator with const_reverse_iterator when
-  //     build failure on Android is fixed.
-  for (std::vector<char32_t>::reverse_iterator it = reverse_last_token.rbegin();
-       it != reverse_last_token.rend(); ++it) {
-    Util::Ucs4ToUtf8Append(*it, last_token);
-  }
-  return true;
-}
-
-// Tries normalizing input text as a math expression, where full-width numbers
-// and math symbols are converted to their half-width equivalents except for
-// some special symbols, e.g., "×", "÷", and "・". Returns false if the input
-// string contains non-math characters.
-bool TryNormalizingKeyAsMathExpression(const absl::string_view s,
-                                       std::string *key) {
-  key->reserve(s.size());
-  for (ConstChar32Iterator iter(s); !iter.Done(); iter.Next()) {
-    // Half-width arabic numbers.
-    if ('0' <= iter.Get() && iter.Get() <= '9') {
-      key->append(1, static_cast<char>(iter.Get()));
-      continue;
-    }
-    // Full-width arabic numbers ("０" -- "９")
-    if (0xFF10 <= iter.Get() && iter.Get() <= 0xFF19) {
-      const char c = iter.Get() - 0xFF10 + '0';
-      key->append(1, c);
-      continue;
-    }
-    switch (iter.Get()) {
-      case 0x002B:
-      case 0xFF0B:  // "+", "＋"
-        key->append(1, '+');
-        break;
-      case 0x002D:
-      case 0x30FC:  // "-", "ー"
-        key->append(1, '-');
-        break;
-      case 0x002A:
-      case 0xFF0A:
-      case 0x00D7:  // "*", "＊", "×"
-        key->append(1, '*');
-        break;
-      case 0x002F:
-      case 0xFF0F:
-      case 0x30FB:
-      case 0x00F7:
-        // "/",  "／", "・", "÷"
-        key->append(1, '/');
-        break;
-      case 0x0028:
-      case 0xFF08:  // "(", "（"
-        key->append(1, '(');
-        break;
-      case 0x0029:
-      case 0xFF09:  // ")", "）"
-        key->append(1, ')');
-        break;
-      case 0x003D:
-      case 0xFF1D:  // "=", "＝"
-        key->append(1, '=');
-        break;
-      default:
-        return false;
-    }
-  }
-  return true;
-}
-
-ConversionRequest CreateConversionRequestWithType(
-    const ConversionRequest &request, ConversionRequest::RequestType type) {
-  ConversionRequest new_request = request;
-  new_request.set_request_type(type);
-  return new_request;
 }
 
 }  // namespace
 
-void ConverterImpl::Init(const PosMatcher *pos_matcher,
-                         const SuppressionDictionary *suppression_dictionary,
-                         std::unique_ptr<PredictorInterface> predictor,
-                         std::unique_ptr<RewriterInterface> rewriter,
-                         ImmutableConverterInterface *immutable_converter) {
-  // Initializes in order of declaration.
-  pos_matcher_ = pos_matcher;
-  suppression_dictionary_ = suppression_dictionary;
-  predictor_ = std::move(predictor);
-  rewriter_ = std::move(rewriter);
-  immutable_converter_ = immutable_converter;
-  general_noun_id_ = pos_matcher_->GetGeneralNounId();
+Converter::Converter(
+    std::unique_ptr<engine::Modules> modules,
+    const ImmutableConverterFactory &immutable_converter_factory,
+    const PredictorFactory &predictor_factory,
+    const RewriterFactory &rewriter_factory)
+    : modules_(std::move(modules)),
+      immutable_converter_(immutable_converter_factory(*modules_)),
+      pos_matcher_(*modules_->GetPosMatcher()),
+      suppression_dictionary_(*modules_->GetSuppressionDictionary()),
+      history_reconstructor_(*modules_->GetPosMatcher()),
+      reverse_converter_(*immutable_converter_),
+      general_noun_id_(pos_matcher_.GetGeneralNounId()) {
+  DCHECK(immutable_converter_);
+  predictor_ = predictor_factory(*modules_, *this, *immutable_converter_);
+  rewriter_ = rewriter_factory(*modules_);
+  DCHECK(predictor_);
+  DCHECK(rewriter_);
 }
 
-bool ConverterImpl::StartConversionForRequest(
-    const ConversionRequest &original_request, Segments *segments) const {
-  ConversionRequest request = CreateConversionRequestWithType(
-      original_request, ConversionRequest::CONVERSION);
-  if (!request.has_composer()) {
-    LOG(ERROR) << "Request doesn't have composer";
-    return false;
-  }
+bool Converter::StartConversion(const ConversionRequest &request,
+                                Segments *segments) const {
+  DCHECK_EQ(request.request_type(), ConversionRequest::CONVERSION);
 
-  std::string conversion_key;
-  switch (request.composer_key_selection()) {
-    case ConversionRequest::CONVERSION_KEY:
-      request.composer().GetQueryForConversion(&conversion_key);
-      break;
-    case ConversionRequest::PREDICTION_KEY:
-      request.composer().GetQueryForPrediction(&conversion_key);
-      break;
-    default:
-      LOG(FATAL) << "Should never reach here";
-  }
-  if (conversion_key.empty()) {
-    return false;
-  }
-
-  return Convert(request, conversion_key, segments);
-}
-
-bool ConverterImpl::StartConversion(Segments *segments,
-                                    const absl::string_view key) const {
+  absl::string_view key = request.key();
   if (key.empty()) {
     return false;
   }
-  ConversionRequest default_request;
-  return Convert(default_request, key, segments);
-}
 
-bool ConverterImpl::Convert(const ConversionRequest &request,
-                            const absl::string_view key,
-                            Segments *segments) const {
-  SetKey(segments, key);
-  if (!immutable_converter_->ConvertForRequest(request, segments)) {
-    // Conversion can fail for keys like "12". Even in such cases, rewriters
-    // (e.g., number and variant rewriters) can populate some candidates.
-    // Therefore, this is not an error.
-    MOZC_VLOG(1) << "ConvertForRequest failed for key: "
-                 << segments->segment(0).key();
-  }
-  RewriteAndSuppressCandidates(request, segments);
-  TrimCandidates(request, segments);
+  segments->InitForConvert(key);
+  ApplyConversion(segments, request);
   return IsValidSegments(request, *segments);
 }
 
-bool ConverterImpl::StartReverseConversion(Segments *segments,
-                                           const absl::string_view key) const {
+bool Converter::StartReverseConversion(Segments *segments,
+                                       const absl::string_view key) const {
   segments->Clear();
   if (key.empty()) {
     return false;
   }
-  SetKey(segments, key);
+  segments->InitForConvert(key);
 
-  // Check if |key| looks like a math expression.  In such case, there's no
-  // chance to get the correct reading by the immutable converter.  Rather,
-  // simply returns normalized value.
-  {
-    std::string value;
-    if (TryNormalizingKeyAsMathExpression(key, &value)) {
-      Segment::Candidate *cand =
-          segments->mutable_segment(0)->push_back_candidate();
-      strings::Assign(cand->key, key);
-      cand->value = std::move(value);
-      return true;
-    }
-  }
-
-  ConversionRequest default_request;
-  default_request.set_request_type(ConversionRequest::REVERSE_CONVERSION);
-  if (!immutable_converter_->ConvertForRequest(default_request, segments)) {
-    return false;
-  }
-  if (segments->segments_size() == 0) {
-    LOG(WARNING) << "no segments from reverse conversion";
-    return false;
-  }
-  for (int i = 0; i < segments->segments_size(); ++i) {
-    const mozc::Segment &seg = segments->segment(i);
-    if (seg.candidates_size() == 0 || seg.candidate(0).value.empty()) {
-      segments->Clear();
-      LOG(WARNING) << "got an empty segment from reverse conversion";
-      return false;
-    }
-  }
-  return true;
+  return reverse_converter_.ReverseConvert(key, segments);
 }
 
 // static
-void ConverterImpl::MaybeSetConsumedKeySizeToCandidate(
+void Converter::MaybeSetConsumedKeySizeToCandidate(
     size_t consumed_key_size, Segment::Candidate *candidate) {
   if (candidate->attributes & Segment::Candidate::PARTIALLY_KEY_CONSUMED) {
     // If PARTIALLY_KEY_CONSUMED is set already,
@@ -382,8 +177,8 @@ void ConverterImpl::MaybeSetConsumedKeySizeToCandidate(
 }
 
 // static
-void ConverterImpl::MaybeSetConsumedKeySizeToSegment(size_t consumed_key_size,
-                                                     Segment *segment) {
+void Converter::MaybeSetConsumedKeySizeToSegment(size_t consumed_key_size,
+                                                 Segment *segment) {
   for (size_t i = 0; i < segment->candidates_size(); ++i) {
     MaybeSetConsumedKeySizeToCandidate(consumed_key_size,
                                        segment->mutable_candidate(i));
@@ -394,15 +189,39 @@ void ConverterImpl::MaybeSetConsumedKeySizeToSegment(size_t consumed_key_size,
   }
 }
 
-// TODO(noriyukit): |key| can be a member of ConversionRequest.
-bool ConverterImpl::Predict(const ConversionRequest &request,
-                            const absl::string_view key,
-                            Segments *segments) const {
-  if (ShouldSetKeyForPrediction(request, key, *segments)) {
-    SetKey(segments, key);
+namespace {
+bool ValidateConversionRequestForPrediction(const ConversionRequest &request) {
+  switch (request.request_type()) {
+    case ConversionRequest::CONVERSION:
+      // Conversion request is not for prediction.
+      return false;
+    case ConversionRequest::PREDICTION:
+    case ConversionRequest::SUGGESTION:
+      // Typical use case.
+      return true;
+    case ConversionRequest::PARTIAL_PREDICTION:
+    case ConversionRequest::PARTIAL_SUGGESTION: {
+      // Partial prediction/suggestion request is applicable only if the
+      // cursor is in the middle of the composer.
+      const size_t cursor = request.composer().GetCursor();
+      return cursor != 0 || cursor != request.composer().GetLength();
+    }
+    default:
+      ABSL_UNREACHABLE();
   }
-  DCHECK_EQ(1, segments->conversion_segments_size());
-  DCHECK_EQ(key, segments->conversion_segment(0).key());
+}
+}  // namespace
+
+bool Converter::StartPrediction(const ConversionRequest &request,
+                                Segments *segments) const {
+  DCHECK(ValidateConversionRequestForPrediction(request));
+
+  absl::string_view key = request.key();
+  if (ShouldInitSegmentsForPrediction(key, *segments)) {
+    segments->InitForConvert(key);
+  }
+  DCHECK_EQ(segments->conversion_segments_size(), 1);
+  DCHECK_EQ(segments->conversion_segment(0).key(), key);
 
   if (!predictor_->PredictForRequest(request, segments)) {
     // Prediction can fail for keys like "12". Even in such cases, rewriters
@@ -430,111 +249,19 @@ bool ConverterImpl::Predict(const ConversionRequest &request,
   return IsValidSegments(request, *segments);
 }
 
-bool ConverterImpl::StartPredictionForRequest(
-    const ConversionRequest &original_request, Segments *segments) const {
-  ConversionRequest request = CreateConversionRequestWithType(
-      original_request, ConversionRequest::PREDICTION);
-  if (!request.has_composer()) {
-    LOG(ERROR) << "Composer is nullptr";
-    return false;
-  }
-
-  std::string prediction_key;
-  request.composer().GetQueryForPrediction(&prediction_key);
-  return Predict(request, prediction_key, segments);
-}
-
-bool ConverterImpl::StartPrediction(Segments *segments,
-                                    const absl::string_view key) const {
-  ConversionRequest default_request;
-  default_request.set_request_type(ConversionRequest::PREDICTION);
-  return Predict(default_request, key, segments);
-}
-
-bool ConverterImpl::StartSuggestion(Segments *segments,
-                                    const absl::string_view key) const {
-  ConversionRequest default_request;
-  default_request.set_request_type(ConversionRequest::SUGGESTION);
-  return Predict(default_request, key, segments);
-}
-
-bool ConverterImpl::StartSuggestionForRequest(
-    const ConversionRequest &original_request, Segments *segments) const {
-  ConversionRequest request = CreateConversionRequestWithType(
-      original_request, ConversionRequest::SUGGESTION);
-  DCHECK(request.has_composer());
-  std::string prediction_key;
-  request.composer().GetQueryForPrediction(&prediction_key);
-  return Predict(request, prediction_key, segments);
-}
-
-bool ConverterImpl::StartPartialSuggestion(Segments *segments,
-                                           const absl::string_view key) const {
-  ConversionRequest default_request;
-  default_request.set_request_type(ConversionRequest::PARTIAL_SUGGESTION);
-  return Predict(default_request, key, segments);
-}
-
-bool ConverterImpl::StartPartialSuggestionForRequest(
-    const ConversionRequest &original_request, Segments *segments) const {
-  ConversionRequest request = CreateConversionRequestWithType(
-      original_request, ConversionRequest::PARTIAL_SUGGESTION);
-  DCHECK(request.has_composer());
-  const size_t cursor = request.composer().GetCursor();
-  if (cursor == 0 || cursor == request.composer().GetLength()) {
-    return StartSuggestionForRequest(request, segments);
-  }
-
-  std::string conversion_key;
-  request.composer().GetQueryForConversion(&conversion_key);
-  strings::Assign(conversion_key,
-                  Util::Utf8SubString(conversion_key, 0, cursor));
-  return Predict(request, conversion_key, segments);
-}
-
-bool ConverterImpl::StartPartialPrediction(Segments *segments,
-                                           const absl::string_view key) const {
-  ConversionRequest default_request;
-  default_request.set_request_type(ConversionRequest::PARTIAL_PREDICTION);
-  return Predict(default_request, key, segments);
-}
-
-bool ConverterImpl::StartPartialPredictionForRequest(
-    const ConversionRequest &original_request, Segments *segments) const {
-  ConversionRequest request = CreateConversionRequestWithType(
-      original_request, ConversionRequest::PARTIAL_PREDICTION);
-  DCHECK(request.has_composer());
-  const size_t cursor = request.composer().GetCursor();
-  if (cursor == 0 || cursor == request.composer().GetLength()) {
-    return StartPredictionForRequest(request, segments);
-  }
-
-  std::string conversion_key;
-  request.composer().GetQueryForConversion(&conversion_key);
-  strings::Assign(conversion_key,
-                  Util::Utf8SubString(conversion_key, 0, cursor));
-
-  return Predict(request, conversion_key, segments);
-}
-
-void ConverterImpl::FinishConversion(const ConversionRequest &request,
-                                     Segments *segments) const {
-  CommitUsageStats(segments, segments->history_segments_size(),
-                   segments->conversion_segments_size());
-
-  for (size_t i = 0; i < segments->segments_size(); ++i) {
-    Segment *seg = segments->mutable_segment(i);
-    DCHECK(seg);
+void Converter::FinishConversion(const ConversionRequest &request,
+                                 Segments *segments) const {
+  for (Segment &segment : *segments) {
     // revert SUBMITTED segments to FIXED_VALUE
     // SUBMITTED segments are created by "submit first segment" operation
     // (ctrl+N for ATOK keymap).
     // To learn the conversion result, we should change the segment types
     // to FIXED_VALUE.
-    if (seg->segment_type() == Segment::SUBMITTED) {
-      seg->set_segment_type(Segment::FIXED_VALUE);
+    if (segment.segment_type() == Segment::SUBMITTED) {
+      segment.set_segment_type(Segment::FIXED_VALUE);
     }
-    if (seg->candidates_size() > 0) {
-      CompletePosIds(seg->mutable_candidate(0));
+    if (segment.candidates_size() > 0) {
+      CompletePosIds(segment.mutable_candidate(0));
     }
   }
 
@@ -551,55 +278,48 @@ void ConverterImpl::FinishConversion(const ConversionRequest &request,
   }
 
   // Remaining segments are used as history segments.
-  for (size_t i = 0; i < segments->segments_size(); ++i) {
-    Segment *seg = segments->mutable_segment(i);
-    DCHECK(seg);
-    seg->set_segment_type(Segment::HISTORY);
+  for (Segment &segment : *segments) {
+    segment.set_segment_type(Segment::HISTORY);
   }
 }
 
-void ConverterImpl::CancelConversion(Segments *segments) const {
+void Converter::CancelConversion(Segments *segments) const {
   segments->clear_conversion_segments();
 }
 
-void ConverterImpl::ResetConversion(Segments *segments) const {
-  segments->Clear();
-}
+void Converter::ResetConversion(Segments *segments) const { segments->Clear(); }
 
-void ConverterImpl::RevertConversion(Segments *segments) const {
+void Converter::RevertConversion(Segments *segments) const {
   if (segments->revert_entries_size() == 0) {
     return;
   }
+  rewriter_->Revert(segments);
   predictor_->Revert(segments);
   segments->clear_revert_entries();
 }
 
-bool ConverterImpl::ReconstructHistory(
-    Segments *segments, const absl::string_view preceding_text) const {
-  segments->Clear();
+bool Converter::DeleteCandidateFromHistory(const Segments &segments,
+                                           size_t segment_index,
+                                           int candidate_index) const {
+  DCHECK_LT(segment_index, segments.segments_size());
+  const Segment &segment = segments.segment(segment_index);
+  DCHECK(segment.is_valid_index(candidate_index));
+  const Segment::Candidate &candidate = segment.candidate(candidate_index);
+  bool result = false;
+  result |=
+      rewriter_->ClearHistoryEntry(segments, segment_index, candidate_index);
+  result |= predictor_->ClearHistoryEntry(candidate.key, candidate.value);
 
-  std::string key;
-  std::string value;
-  uint16_t id;
-  if (!GetLastConnectivePart(preceding_text, &key, &value, &id)) {
-    return false;
-  }
-
-  Segment *segment = segments->add_segment();
-  segment->set_key(key);
-  segment->set_segment_type(Segment::HISTORY);
-  Segment::Candidate *candidate = segment->push_back_candidate();
-  candidate->rid = id;
-  candidate->lid = id;
-  candidate->content_key = key;
-  candidate->key = std::move(key);
-  candidate->content_value = value;
-  candidate->value = std::move(value);
-  candidate->attributes = Segment::Candidate::NO_LEARNING;
-  return true;
+  return result;
 }
 
-bool ConverterImpl::CommitSegmentValueInternal(
+bool Converter::ReconstructHistory(
+    Segments *segments, const absl::string_view preceding_text) const {
+  segments->Clear();
+  return history_reconstructor_.ReconstructHistory(preceding_text, segments);
+}
+
+bool Converter::CommitSegmentValueInternal(
     Segments *segments, size_t segment_index, int candidate_index,
     Segment::SegmentType segment_type) const {
   segment_index = GetSegmentIndex(segments, segment_index);
@@ -624,13 +344,13 @@ bool ConverterImpl::CommitSegmentValueInternal(
   return true;
 }
 
-bool ConverterImpl::CommitSegmentValue(Segments *segments, size_t segment_index,
-                                       int candidate_index) const {
+bool Converter::CommitSegmentValue(Segments *segments, size_t segment_index,
+                                   int candidate_index) const {
   return CommitSegmentValueInternal(segments, segment_index, candidate_index,
                                     Segment::FIXED_VALUE);
 }
 
-bool ConverterImpl::CommitPartialSuggestionSegmentValue(
+bool Converter::CommitPartialSuggestionSegmentValue(
     Segments *segments, size_t segment_index, int candidate_index,
     const absl::string_view current_segment_key,
     const absl::string_view new_segment_key) const {
@@ -641,30 +361,20 @@ bool ConverterImpl::CommitPartialSuggestionSegmentValue(
                                   Segment::SUBMITTED)) {
     return false;
   }
-  CommitUsageStats(segments, raw_segment_index, 1);
 
   Segment *segment = segments->mutable_segment(raw_segment_index);
   DCHECK_LT(0, segment->candidates_size());
-  const Segment::Candidate &submitted_candidate = segment->candidate(0);
-  const bool auto_partial_suggestion =
-      Util::CharsLen(submitted_candidate.key) != Util::CharsLen(segment->key());
   segment->set_key(current_segment_key);
 
   Segment *new_segment = segments->insert_segment(raw_segment_index + 1);
   new_segment->set_key(new_segment_key);
   DCHECK_GT(segments->conversion_segments_size(), 0);
 
-  if (auto_partial_suggestion) {
-    UsageStats::IncrementCount("CommitAutoPartialSuggestion");
-  } else {
-    UsageStats::IncrementCount("CommitPartialSuggestion");
-  }
-
   return true;
 }
 
-bool ConverterImpl::FocusSegmentValue(Segments *segments, size_t segment_index,
-                                      int candidate_index) const {
+bool Converter::FocusSegmentValue(Segments *segments, size_t segment_index,
+                                  int candidate_index) const {
   segment_index = GetSegmentIndex(segments, segment_index);
   if (segment_index == kErrorIndex) {
     return false;
@@ -673,9 +383,8 @@ bool ConverterImpl::FocusSegmentValue(Segments *segments, size_t segment_index,
   return rewriter_->Focus(segments, segment_index, candidate_index);
 }
 
-bool ConverterImpl::CommitSegments(
-    Segments *segments, const std::vector<size_t> &candidate_index) const {
-  const size_t conversion_segment_index = segments->history_segments_size();
+bool Converter::CommitSegments(Segments *segments,
+                               absl::Span<const size_t> candidate_index) const {
   for (size_t i = 0; i < candidate_index.size(); ++i) {
     // 2nd argument must always be 0 because on each iteration
     // 1st segment is submitted.
@@ -685,14 +394,12 @@ bool ConverterImpl::CommitSegments(
       return false;
     }
   }
-  CommitUsageStats(segments, conversion_segment_index, candidate_index.size());
   return true;
 }
 
-bool ConverterImpl::ResizeSegment(Segments *segments,
-                                  const ConversionRequest &request,
-                                  size_t segment_index,
-                                  int offset_length) const {
+bool Converter::ResizeSegment(Segments *segments,
+                              const ConversionRequest &request,
+                              size_t segment_index, int offset_length) const {
   if (request.request_type() != ConversionRequest::CONVERSION) {
     return false;
   }
@@ -702,153 +409,47 @@ bool ConverterImpl::ResizeSegment(Segments *segments,
     return false;
   }
 
-  segment_index = GetSegmentIndex(segments, segment_index);
-  if (segment_index == kErrorIndex) {
+  if (segment_index >= segments->conversion_segments_size()) {
     return false;
   }
 
-  // the last segments cannot become longer
-  if (offset_length > 0 && segment_index == segments->segments_size() - 1) {
+  const size_t key_len = segments->conversion_segment(segment_index).key_len();
+  if (key_len == 0) {
     return false;
   }
 
-  const Segment &cur_segment = segments->segment(segment_index);
-  const size_t cur_length = Util::CharsLen(cur_segment.key());
-
-  // length cannot become 0
-  if (cur_length + offset_length == 0) {
+  const int new_size = key_len + offset_length;
+  if (new_size <= 0 || new_size > std::numeric_limits<uint8_t>::max()) {
     return false;
   }
-
-  const std::string cur_segment_key = cur_segment.key();
-
-  if (offset_length > 0) {
-    int length = offset_length;
-    std::string last_key;
-    size_t last_clen = 0;
-    {
-      std::string new_key = cur_segment_key;
-      while (segment_index + 1 < segments->segments_size()) {
-        last_key = segments->segment(segment_index + 1).key();
-        segments->erase_segment(segment_index + 1);
-        last_clen = Util::CharsLen(last_key.c_str(), last_key.size());
-        length -= static_cast<int>(last_clen);
-        if (length <= 0) {
-          std::string tmp;
-          Util::Utf8SubString(last_key, 0, length + last_clen, &tmp);
-          new_key += tmp;
-          break;
-        }
-        new_key += last_key;
-      }
-
-      Segment *segment = segments->mutable_segment(segment_index);
-      segment->Clear();
-      segment->set_segment_type(Segment::FIXED_BOUNDARY);
-      segment->set_key(std::move(new_key));
-    }  // scope out |segment|, |new_key|
-
-    if (length < 0) {  // remaining part
-      Segment *segment = segments->insert_segment(segment_index + 1);
-      segment->set_segment_type(Segment::FREE);
-      segment->set_key(
-          Util::Utf8SubString(last_key, static_cast<size_t>(length + last_clen),
-                              static_cast<size_t>(-length)));
-    }
-  } else if (offset_length < 0) {
-    if (cur_length + offset_length > 0) {
-      Segment *segment1 = segments->mutable_segment(segment_index);
-      segment1->Clear();
-      segment1->set_segment_type(Segment::FIXED_BOUNDARY);
-      segment1->set_key(
-          Util::Utf8SubString(cur_segment_key, 0, cur_length + offset_length));
-    }
-
-    if (segment_index + 1 < segments->segments_size()) {
-      Segment *segment2 = segments->mutable_segment(segment_index + 1);
-      segment2->set_segment_type(Segment::FREE);
-      std::string tmp;
-      Util::Utf8SubString(cur_segment_key,
-                          std::max<size_t>(0, cur_length + offset_length),
-                          cur_length, &tmp);
-      tmp += segment2->key();
-      segment2->set_key(std::move(tmp));
-    } else {
-      Segment *segment2 = segments->add_segment();
-      segment2->set_segment_type(Segment::FREE);
-      segment2->set_key(Util::Utf8SubString(
-          cur_segment_key, std::max<size_t>(0, cur_length + offset_length),
-          cur_length));
-    }
-  }
-
-  segments->set_resized(true);
-
-  if (!immutable_converter_->ConvertForRequest(request, segments)) {
-    // Conversion can fail for keys like "12". Even in such cases, rewriters
-    // (e.g., number and variant rewriters) can populate some candidates.
-    // Therefore, this is not an error.
-    MOZC_VLOG(1) << "ConvertForRequest failed for key: "
-                 << segments->segment(0).key();
-  }
-  RewriteAndSuppressCandidates(request, segments);
-  TrimCandidates(request, segments);
-  return true;
+  const std::array<uint8_t, 1> new_size_array = {
+      static_cast<uint8_t>(new_size)};
+  return ResizeSegments(segments, request, segment_index, new_size_array);
 }
 
-bool ConverterImpl::ResizeSegment(
-    Segments *segments, const ConversionRequest &request,
-    size_t start_segment_index, size_t segments_size,
-    absl::Span<const uint8_t> new_size_array) const {
+bool Converter::ResizeSegments(Segments *segments,
+                               const ConversionRequest &request,
+                               size_t start_segment_index,
+                               absl::Span<const uint8_t> new_size_array) const {
   if (request.request_type() != ConversionRequest::CONVERSION) {
     return false;
   }
 
-  constexpr size_t kMaxArraySize = 256;
   start_segment_index = GetSegmentIndex(segments, start_segment_index);
-  const size_t end_segment_index = start_segment_index + segments_size;
-  if (start_segment_index == kErrorIndex ||
-      end_segment_index <= start_segment_index ||
-      end_segment_index > segments->segments_size() ||
-      new_size_array.size() > kMaxArraySize) {
+  if (start_segment_index == kErrorIndex) {
     return false;
   }
 
-  std::string key;
-  for (size_t i = start_segment_index; i < end_segment_index; ++i) {
-    key += segments->segment(i).key();
-  }
-
-  if (key.empty()) {
+  if (!segments->Resize(start_segment_index, new_size_array)) {
     return false;
   }
 
-  size_t consumed = 0;
-  const size_t key_len = Util::CharsLen(key);
-  std::vector<std::string> new_keys;
-  new_keys.reserve(new_size_array.size() + 1);
+  ApplyConversion(segments, request);
+  return true;
+}
 
-  for (size_t new_size : new_size_array) {
-    if (new_size != 0 && consumed < key_len) {
-      new_keys.emplace_back(Util::Utf8SubString(key, consumed, new_size));
-      consumed += new_size;
-    }
-  }
-  if (consumed < key_len) {
-    new_keys.emplace_back(
-        Util::Utf8SubString(key, consumed, key_len - consumed));
-  }
-
-  segments->erase_segments(start_segment_index, segments_size);
-
-  for (size_t i = 0; i < new_keys.size(); ++i) {
-    Segment *seg = segments->insert_segment(start_segment_index + i);
-    seg->set_segment_type(Segment::FIXED_BOUNDARY);
-    seg->set_key(std::move(new_keys[i]));
-  }
-
-  segments->set_resized(true);
-
+void Converter::ApplyConversion(Segments *segments,
+                                const ConversionRequest &request) const {
   if (!immutable_converter_->ConvertForRequest(request, segments)) {
     // Conversion can fail for keys like "12". Even in such cases, rewriters
     // (e.g., number and variant rewriters) can populate some candidates.
@@ -858,10 +459,9 @@ bool ConverterImpl::ResizeSegment(
   }
   RewriteAndSuppressCandidates(request, segments);
   TrimCandidates(request, segments);
-  return true;
 }
 
-void ConverterImpl::CompletePosIds(Segment::Candidate *candidate) const {
+void Converter::CompletePosIds(Segment::Candidate *candidate) const {
   DCHECK(candidate);
   if (candidate->value.empty() || candidate->key.empty()) {
     return;
@@ -882,18 +482,22 @@ void ConverterImpl::CompletePosIds(Segment::Candidate *candidate) const {
   // In order to reduce the latency, first, expand 5 candidates.
   // If no valid candidates are found within 5 candidates, expand
   // candidates step-by-step.
-  ConversionRequest request;
   for (size_t size = kExpandSizeStart; size < kExpandSizeMax;
        size += kExpandSizeDiff) {
     Segments segments;
-    SetKey(&segments, candidate->key);
+    segments.InitForConvert(candidate->key);
     // use PREDICTION mode, as the size of segments after
     // PREDICTION mode is always 1, thanks to real time conversion.
     // However, PREDICTION mode produces "predictions", meaning
     // that keys of result candidate are not always the same as
     // query key. It would be nice to have PREDICTION_REALTIME_CONVERSION_ONLY.
-    request.set_request_type(ConversionRequest::PREDICTION);
-    request.set_max_conversion_candidates_size(size);
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetOptions({
+                .request_type = ConversionRequest::PREDICTION,
+                .max_conversion_candidates_size = static_cast<int>(size),
+            })
+            .Build();
     // In order to complete PosIds, call ImmutableConverter again.
     if (!immutable_converter_->ConvertForRequest(request, &segments)) {
       LOG(ERROR) << "ImmutableConverter::Convert() failed";
@@ -921,26 +525,44 @@ void ConverterImpl::CompletePosIds(Segment::Candidate *candidate) const {
                 << "rid: " << candidate->rid;
 }
 
-void ConverterImpl::RewriteAndSuppressCandidates(
-    const ConversionRequest &request, Segments *segments) const {
+void Converter::RewriteAndSuppressCandidates(const ConversionRequest &request,
+                                             Segments *segments) const {
+  // 1. Resize segments if needed.
+  // Check if the segments need to be resized.
+  if (std::optional<RewriterInterface::ResizeSegmentsRequest> resize_request =
+          rewriter_->CheckResizeSegmentsRequest(request, *segments);
+      resize_request.has_value()) {
+    if (ResizeSegments(segments, request, resize_request->segment_index,
+                       resize_request->segment_sizes)) {
+      // If the segments are resized, ResizeSegments recursively executed
+      // RewriteAndSuppressCandidates with resized segments. No need to execute
+      // them again.
+      // TODO(b/381537649): Stop using the recursive call of
+      // RewriteAndSuppressCandidates.
+      return;
+    }
+  }
+
+  // 2. Rewrite candidates in each segment.
   if (!rewriter_->Rewrite(request, segments)) {
     return;
   }
+
+  // 3. Suppress candidates in each segment.
   // Optimization for common use case: Since most of users don't use suppression
   // dictionary and we can skip the subsequent check.
-  if (suppression_dictionary_->IsEmpty()) {
+  if (suppression_dictionary_.IsEmpty()) {
     return;
   }
   // Although the suppression dictionary is applied at node-level in dictionary
   // layer, there's possibility that bad words are generated from multiple nodes
   // and by rewriters. Hence, we need to apply it again at the last stage of
   // converter.
-  for (size_t i = 0; i < segments->conversion_segments_size(); ++i) {
-    Segment *seg = segments->mutable_conversion_segment(i);
-    for (size_t j = 0; j < seg->candidates_size();) {
-      const Segment::Candidate &cand = seg->candidate(j);
-      if (suppression_dictionary_->SuppressEntry(cand.key, cand.value)) {
-        seg->erase_candidate(j);
+  for (Segment &segment : segments->conversion_segments()) {
+    for (size_t j = 0; j < segment.candidates_size();) {
+      const Segment::Candidate &cand = segment.candidate(j);
+      if (suppression_dictionary_.SuppressEntry(cand.key, cand.value)) {
+        segment.erase_candidate(j);
       } else {
         ++j;
       }
@@ -948,90 +570,46 @@ void ConverterImpl::RewriteAndSuppressCandidates(
   }
 }
 
-void ConverterImpl::TrimCandidates(const ConversionRequest &request,
-                                   Segments *segments) const {
+void Converter::TrimCandidates(const ConversionRequest &request,
+                               Segments *segments) const {
   const mozc::commands::Request &request_proto = request.request();
   if (!request_proto.has_candidates_size_limit()) {
     return;
   }
 
   const int limit = request_proto.candidates_size_limit();
-  for (size_t segment_index = 0;
-       segment_index < segments->conversion_segments_size(); ++segment_index) {
-    Segment *seg = segments->mutable_conversion_segment(segment_index);
-    const int candidates_size = seg->candidates_size();
+  for (Segment &segment : segments->conversion_segments()) {
+    const int candidates_size = segment.candidates_size();
     // A segment should have at least one candidate.
     const int candidates_limit =
-        std::max<int>(1, limit - seg->meta_candidates_size());
+        std::max<int>(1, limit - segment.meta_candidates_size());
     if (candidates_size < candidates_limit) {
       continue;
     }
-    seg->erase_candidates(candidates_limit, candidates_size - candidates_limit);
+    segment.erase_candidates(candidates_limit,
+                             candidates_size - candidates_limit);
   }
 }
 
-void ConverterImpl::CommitUsageStats(const Segments *segments,
-                                     size_t begin_segment_index,
-                                     size_t segment_length) const {
-  if (segment_length == 0) {
-    return;
+bool Converter::Reload() {
+  if (modules()->GetUserDictionary()) {
+    modules()->GetUserDictionary()->Reload();
   }
-  if (begin_segment_index + segment_length > segments->segments_size()) {
-    LOG(ERROR) << "Invalid state. segments size: " << segments->segments_size()
-               << " required size: " << begin_segment_index + segment_length;
-    return;
-  }
-
-  // Timing stats are scaled by 1,000 to improve the accuracy of average values.
-
-  uint64_t submitted_total_length = 0;
-  for (size_t i = 0; i < segment_length; ++i) {
-    const Segment &segment = segments->segment(begin_segment_index + i);
-    const uint32_t submitted_length =
-        Util::CharsLen(segment.candidate(0).value);
-    UsageStats::UpdateTiming("SubmittedSegmentLengthx1000",
-                             submitted_length * 1000);
-    submitted_total_length += submitted_length;
-  }
-
-  UsageStats::UpdateTiming("SubmittedLengthx1000",
-                           submitted_total_length * 1000);
-  UsageStats::UpdateTiming("SubmittedSegmentNumberx1000",
-                           segment_length * 1000);
-  UsageStats::IncrementCountBy("SubmittedTotalLength", submitted_total_length);
+  return rewriter()->Reload() && predictor()->Reload();
 }
 
-bool ConverterImpl::GetLastConnectivePart(
-    const absl::string_view preceding_text, std::string *key,
-    std::string *value, uint16_t *id) const {
-  key->clear();
-  value->clear();
-  *id = general_noun_id_;
-
-  Util::ScriptType last_script_type = Util::SCRIPT_TYPE_SIZE;
-  std::string last_token;
-  if (!ExtractLastTokenWithScriptType(preceding_text, &last_token,
-                                      &last_script_type)) {
-    return false;
+bool Converter::Sync() {
+  if (modules()->GetUserDictionary()) {
+    modules()->GetUserDictionary()->Sync();
   }
+  return rewriter()->Sync() && predictor()->Sync();
+}
 
-  // Currently only NUMBER and ALPHABET are supported.
-  switch (last_script_type) {
-    case Util::NUMBER: {
-      japanese_util::FullWidthAsciiToHalfWidthAscii(last_token, key);
-      *value = std::move(last_token);
-      *id = pos_matcher_->GetNumberId();
-      return true;
-    }
-    case Util::ALPHABET: {
-      japanese_util::FullWidthAsciiToHalfWidthAscii(last_token, key);
-      *value = std::move(last_token);
-      *id = pos_matcher_->GetUniqueNounId();
-      return true;
-    }
-    default:
-      return false;
+bool Converter::Wait() {
+  if (modules()->GetUserDictionary()) {
+    modules()->GetUserDictionary()->WaitForReloader();
   }
+  return predictor()->Wait();
 }
 
 }  // namespace mozc

@@ -31,12 +31,12 @@
 #define MOZC_CONVERTER_QUALITY_REGRESSION_UTIL_H_
 
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "converter/segments.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
@@ -73,7 +73,8 @@ class QualityRegressionUtil {
     absl::Status ParseFromTSV(const std::string &tsv_line);
   };
 
-  explicit QualityRegressionUtil(ConverterInterface *converter);
+  explicit QualityRegressionUtil(
+      std::shared_ptr<const ConverterInterface> converter);
   QualityRegressionUtil(const QualityRegressionUtil &) = delete;
   QualityRegressionUtil &operator=(const QualityRegressionUtil &) = delete;
   virtual ~QualityRegressionUtil() = default;
@@ -81,7 +82,7 @@ class QualityRegressionUtil {
   // Pase |filename| and save the all test items into |outputs|.
   static absl::Status ParseFile(const std::string &filename,
                                 std::vector<TestItem> *outputs);
-  static absl::Status ParseFiles(const std::vector<std::string> &filename,
+  static absl::Status ParseFiles(absl::Span<const std::string> filenames,
                                  std::vector<TestItem> *outputs);
 
   absl::StatusOr<bool> ConvertAndTest(const TestItem &item,
@@ -92,7 +93,7 @@ class QualityRegressionUtil {
   static std::string GetPlatformString(uint32_t platform_bitfiled);
 
  private:
-  ConverterInterface *converter_;
+  std::shared_ptr<const ConverterInterface> converter_;
   commands::Request request_;
   config::Config config_;
   Segments segments_;

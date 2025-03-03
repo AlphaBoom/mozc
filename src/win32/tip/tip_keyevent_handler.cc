@@ -37,7 +37,8 @@
 #include <memory>
 #include <string>
 
-#include "base/logging.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "base/win32/wide_char.h"
 #include "client/client_interface.h"
 #include "protocol/commands.pb.h"
@@ -216,7 +217,7 @@ HRESULT OnTestKey(TipTextService *text_service, ITfContext *context,
       case SurrogatePairObserver::DO_DEFAULT_ACTION:
         break;
       case SurrogatePairObserver::DO_DEFAULT_ACTION_WITH_RETURNED_UCS4:
-        vk = VirtualKey::FromUnicode(surrogate_action.ucs4);
+        vk = VirtualKey::FromUnicode(surrogate_action.codepoint);
         break;
       case SurrogatePairObserver::CONSUME_KEY_BUT_NEVER_SEND_TO_SERVER:
         *eaten = TRUE;
@@ -368,7 +369,7 @@ HRESULT OnKey(TipTextService *text_service, ITfContext *context,
       case SurrogatePairObserver::DO_DEFAULT_ACTION:
         break;
       case SurrogatePairObserver::DO_DEFAULT_ACTION_WITH_RETURNED_UCS4:
-        vk = VirtualKey::FromUnicode(surrogate_action.ucs4);
+        vk = VirtualKey::FromUnicode(surrogate_action.codepoint);
         break;
       case SurrogatePairObserver::CONSUME_KEY_BUT_NEVER_SEND_TO_SERVER:
         ignore_this_keyevent = true;

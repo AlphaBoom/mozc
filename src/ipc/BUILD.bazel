@@ -30,6 +30,8 @@
 # Visibility:  please choose a more appropriate default for the package,
 # and update any rules that should be different.
 
+load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
+load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 load(
     "//:build_defs.bzl",
     "mozc_cc_binary",
@@ -54,12 +56,13 @@ mozc_cc_library(
         "//base:const",
         "//base:cpu_stats",
         "//base:file_util",
-        "//base:logging",
         "//base:singleton",
         "//base:system_util",
         "//base:thread",
         "//base:util",
         "//base:vlog",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
@@ -97,7 +100,6 @@ mozc_cc_library(
         "//base:const",
         "//base:file_stream",
         "//base:file_util",
-        "//base:logging",
         "//base:obfuscator_support",
         "//base:port",
         "//base:process_mutex",
@@ -107,8 +109,10 @@ mozc_cc_library(
         "//base:util",
         "//base:version",
         "//base:vlog",
-        "//testing:gunit_prod",
+        "//testing:friend_test",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/synchronization",
@@ -128,8 +132,9 @@ mozc_cc_binary(
     deps = [
         ":ipc_path_manager",
         "//base:init_mozc_buildtool",
-        "//base:logging",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/time",
     ],
 )
@@ -138,7 +143,6 @@ mozc_cc_test(
     name = "ipc_path_manager_test",
     size = "small",
     srcs = ["ipc_path_manager_test.cc"],
-    requires_full_emulation = False,
     deps = [
         ":ipc",
         ":ipc_cc_proto",
@@ -173,7 +177,7 @@ mozc_cc_library(
     hdrs = ["ipc_test_util.h"],
     deps = [
         ":ipc",
-        "//base:logging",
+        "@com_google_absl//absl/log:check",
     ],
 )
 
@@ -182,7 +186,6 @@ mozc_cc_test(
     size = "small",
     srcs = ["ipc_test.cc"],
     copts = ["$(STACK_FRAME_UNLIMITED)"],  # ipc_test.cc
-    requires_full_emulation = False,
     deps = [
         ":ipc",
         ":ipc_test_util",
@@ -201,9 +204,10 @@ mozc_cc_binary(
     deps = [
         ":ipc",
         "//base:init_mozc_buildtool",
-        "//base:logging",
         "//base:thread",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
     ],
@@ -216,9 +220,9 @@ mozc_cc_library(
     deps = [
         "//base:const",
         "//base:hash",
-        "//base:logging",
         "//base:system_util",
         "//base:vlog",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/time",
@@ -236,8 +240,9 @@ mozc_cc_binary(
     deps = [
         ":named_event",
         "//base:init_mozc_buildtool",
-        "//base:logging",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/time",
     ],
 )
@@ -246,7 +251,6 @@ mozc_cc_test(
     name = "named_event_test",
     size = "small",
     srcs = ["named_event_test.cc"],
-    requires_full_emulation = False,
     deps = [
         ":named_event",
         "//base:clock",
@@ -262,16 +266,16 @@ mozc_cc_library(
     srcs = ["process_watch_dog.cc"],
     hdrs = ["process_watch_dog.h"],
     deps = [
-        "//base:logging",
         "//base:port",
         "//base:thread",
-        "//base:vlog",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
     ] + mozc_select(
         windows = [
+            "//base:vlog",
             "//base/win32:hresult",
             "@com_microsoft_wil//:wil",
         ],
@@ -304,12 +308,11 @@ mozc_cc_test(
     name = "process_watch_dog_test",
     size = "small",
     srcs = ["process_watch_dog_test.cc"],
-    requires_full_emulation = False,
     deps = [
         ":process_watch_dog",
         "//base:clock",
-        "//base:logging",
         "//testing:gunit_main",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/time",
     ],
 )

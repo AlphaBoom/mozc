@@ -30,9 +30,8 @@
 #ifndef MOZC_CONVERTER_CONVERTER_INTERFACE_H_
 #define MOZC_CONVERTER_CONVERTER_INTERFACE_H_
 
+#include <cstddef>
 #include <cstdint>
-#include <string>
-#include <vector>
 
 #include "absl/base/attributes.h"
 #include "absl/strings/string_view.h"
@@ -56,14 +55,8 @@ class ConverterInterface {
 
   // Starts conversion for given request.
   ABSL_MUST_USE_RESULT
-  virtual bool StartConversionForRequest(const ConversionRequest &request,
-                                         Segments *segments) const = 0;
-
-  // Start conversion with key.
-  // key is a request written in Hiragana sequence
-  ABSL_MUST_USE_RESULT
-  virtual bool StartConversion(Segments *segments,
-                               absl::string_view key) const = 0;
+  virtual bool StartConversion(const ConversionRequest &request,
+                               Segments *segments) const = 0;
 
   // Start reverse conversion with key.
   ABSL_MUST_USE_RESULT
@@ -72,43 +65,8 @@ class ConverterInterface {
 
   // Starts prediction for given request.
   ABSL_MUST_USE_RESULT
-  virtual bool StartPredictionForRequest(const ConversionRequest &request,
-                                         Segments *segments) const = 0;
-
-  // Start prediction with key (request_type = PREDICTION)
-  ABSL_MUST_USE_RESULT
-  virtual bool StartPrediction(Segments *segments,
-                               absl::string_view key) const = 0;
-
-  // Starts suggestion for given request.
-  ABSL_MUST_USE_RESULT
-  virtual bool StartSuggestionForRequest(const ConversionRequest &request,
-                                         Segments *segments) const = 0;
-
-  // Start suggestion with key (request_type = SUGGESTION)
-  ABSL_MUST_USE_RESULT
-  virtual bool StartSuggestion(Segments *segments,
-                               absl::string_view key) const = 0;
-
-  // Starts partial prediction for given request.
-  ABSL_MUST_USE_RESULT
-  virtual bool StartPartialPredictionForRequest(
-      const ConversionRequest &request, Segments *segments) const = 0;
-
-  // Start prediction with key (request_type = PARTIAL_PREDICTION)
-  ABSL_MUST_USE_RESULT
-  virtual bool StartPartialPrediction(Segments *segments,
-                                      absl::string_view key) const = 0;
-
-  // Starts partial suggestion for given request.
-  ABSL_MUST_USE_RESULT
-  virtual bool StartPartialSuggestionForRequest(
-      const ConversionRequest &request, Segments *segments) const = 0;
-
-  // Start suggestion with key (request_type = PARTIAL_SUGGESTION)
-  ABSL_MUST_USE_RESULT
-  virtual bool StartPartialSuggestion(Segments *segments,
-                                      absl::string_view key) const = 0;
+  virtual bool StartPrediction(const ConversionRequest &request,
+                               Segments *segments) const = 0;
 
   // Finish conversion.
   // Segments are cleared. Context is not cleared
@@ -123,6 +81,15 @@ class ConverterInterface {
 
   // Revert last Finish operation
   virtual void RevertConversion(Segments *segments) const = 0;
+
+  // Delete candidate from user input history.
+  // Returns false if the candidate was not found or deletion failed.
+  // Note: |segment_index| is the index for all segments, not the index of
+  // conversion_segments.
+  ABSL_MUST_USE_RESULT
+  virtual bool DeleteCandidateFromHistory(const Segments &segments,
+                                          size_t segment_index,
+                                          int candidate_index) const = 0;
 
   // Reconstruct history segments from given preceding text.
   ABSL_MUST_USE_RESULT
@@ -167,7 +134,7 @@ class ConverterInterface {
   // 1st segment.
   ABSL_MUST_USE_RESULT
   virtual bool CommitSegments(
-      Segments *segments, const std::vector<size_t> &candidate_index) const = 0;
+      Segments *segments, absl::Span<const size_t> candidate_index) const = 0;
 
   // Resize segment_index-th segment by offset_length.
   // offset_length can be negative.
@@ -177,9 +144,9 @@ class ConverterInterface {
 
   // Resize [start_segment_index, start_segment_index + segment_size]
   // segments with the new size in new_size_array.
-  ABSL_MUST_USE_RESULT virtual bool ResizeSegment(
+  ABSL_MUST_USE_RESULT virtual bool ResizeSegments(
       Segments *segments, const ConversionRequest &request,
-      size_t start_segment_index, size_t segments_size,
+      size_t start_segment_index,
       absl::Span<const uint8_t> new_size_array) const = 0;
 
  protected:

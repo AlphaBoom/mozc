@@ -29,13 +29,15 @@
 
 #include "rewriter/a11y_description_rewriter.h"
 
-#include <memory>
 #include <string>
 
 #include "absl/strings/string_view.h"
+#include "converter/segments.h"
 #include "data_manager/data_manager.h"
 #include "data_manager/testing/mock_data_manager.h"
 #include "protocol/commands.pb.h"
+#include "request/conversion_request.h"
+#include "rewriter/rewriter_interface.h"
 #include "testing/gunit.h"
 
 namespace mozc {
@@ -52,8 +54,8 @@ void AddCandidateWithValue(const absl::string_view value, Segment *segment) {
 class A11yDescriptionRewriterTest : public ::testing::Test {
  protected:
   A11yDescriptionRewriterTest()
-      : rewriter_(&mock_data_manager_),
-        rewriter_without_data_(&dummy_data_manager_) {}
+      : rewriter_(mock_data_manager_),
+        rewriter_without_data_(dummy_data_manager_) {}
 
   const RewriterInterface *GetRewriter() { return &rewriter_; }
   const RewriterInterface *GetRewriterWithoutData() {
@@ -68,22 +70,23 @@ class A11yDescriptionRewriterTest : public ::testing::Test {
 };
 
 TEST_F(A11yDescriptionRewriterTest, WithoutData) {
-  ConversionRequest a11y_conv_request;
   commands::Request a11y_request;
-
   a11y_request.set_enable_a11y_description(true);
-  a11y_conv_request.set_request(&a11y_request);
+
+  const ConversionRequest a11y_conv_request =
+      ConversionRequestBuilder().SetRequest(a11y_request).Build();
 
   EXPECT_EQ(GetRewriterWithoutData()->capability(a11y_conv_request),
             RewriterInterface::NOT_AVAILABLE);
 }
 
 TEST_F(A11yDescriptionRewriterTest, FeatureDisabled) {
-  ConversionRequest a11y_conv_request, non_a11y_conv_request;
+  ConversionRequest non_a11y_conv_request;
   commands::Request a11y_request;
 
   a11y_request.set_enable_a11y_description(true);
-  a11y_conv_request.set_request(&a11y_request);
+  const ConversionRequest a11y_conv_request =
+      ConversionRequestBuilder().SetRequest(a11y_request).Build();
 
   EXPECT_EQ(GetRewriter()->capability(a11y_conv_request),
             RewriterInterface::ALL);

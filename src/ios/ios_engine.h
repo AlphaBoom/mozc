@@ -36,13 +36,12 @@
 
 #include "absl/base/thread_annotations.h"
 #include "absl/synchronization/mutex.h"
-#include "base/port.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 
 namespace mozc {
 
-class SessionHandlerInterface;
+class SessionHandler;
 
 namespace ios {
 
@@ -62,10 +61,6 @@ class IosEngine {
   explicit IosEngine(const std::string &data_file_path);
 
   ~IosEngine();
-
-  // Initializes global modules.  This function should be called before the
-  // initialization of IosEngine.
-  static void InitMozc();
 
   // The following methods are helpers to populate command proto and send it
   // to the session handler.  Input to and output from the session handler are
@@ -199,8 +194,7 @@ class IosEngine {
   bool Reload(commands::Command *command);
 
   absl::Mutex mutex_;
-  std::unique_ptr<SessionHandlerInterface> session_handler_
-      ABSL_PT_GUARDED_BY(mutex_);
+  std::unique_ptr<SessionHandler> session_handler_ ABSL_PT_GUARDED_BY(mutex_);
   uint64_t session_id_ = 0;
   commands::Request current_request_;
   InputConfigTuple current_config_tuple_;

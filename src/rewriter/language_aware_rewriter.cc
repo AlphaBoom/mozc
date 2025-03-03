@@ -33,18 +33,18 @@
 #include <string>
 #include <utility>
 
+#include "absl/log/check.h"
+#include "absl/strings/string_view.h"
 #include "base/japanese_util.h"
-#include "base/logging.h"
 #include "base/util.h"
 #include "composer/composer.h"
-#include "config/config_handler.h"
 #include "converter/segments.h"
 #include "dictionary/dictionary_interface.h"
 #include "dictionary/pos_matcher.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 #include "request/conversion_request.h"
-#include "usage_stats/usage_stats.h"
+#include "rewriter/rewriter_interface.h"
 
 namespace mozc {
 
@@ -52,8 +52,8 @@ using dictionary::DictionaryInterface;
 using dictionary::PosMatcher;
 
 LanguageAwareRewriter::LanguageAwareRewriter(
-    const PosMatcher &pos_matcher, const DictionaryInterface *dictionary)
-    : unknown_id_(pos_matcher.GetUnknownId()), dictionary_(dictionary) {}
+    const PosMatcher &pos_matcher, const DictionaryInterface &dictionary)
+    : unknown_id_(pos_matcher.GetUnknownId()), dictionary_(&dictionary) {}
 
 LanguageAwareRewriter::~LanguageAwareRewriter() = default;
 
@@ -100,10 +100,9 @@ int LanguageAwareRewriter::capability(const ConversionRequest &request) const {
 }
 
 namespace {
-bool IsRawQuery(const composer::Composer &composer,
+bool IsRawQuery(const composer::ComposerData &composer,
                 const DictionaryInterface *dictionary, int *rank) {
-  std::string raw_text;
-  composer.GetRawString(&raw_text);
+  const std::string raw_text = composer.GetRawString();
 
   // Check if the length of text is less than or equal to three.
   // For example, "cat" is not treated as a raw query so far to avoid
@@ -114,17 +113,15 @@ bool IsRawQuery(const composer::Composer &composer,
 
   // If the composition string is same with the raw_text, there is no
   // need to add the candidate to suggestions.
-  std::string composition;
-  composer.GetStringForPreedit(&composition);
+  const std::string composition = composer.GetStringForPreedit();
   if (composition == raw_text) {
     return false;
   }
 
   // If the composition string is the full width form of the raw_text,
   // there is no need to add the candidate to suggestions.
-  std::string composition_in_half_width_ascii;
-  japanese_util::FullWidthAsciiToHalfWidthAscii(
-      composition, &composition_in_half_width_ascii);
+  std::string composition_in_half_width_ascii =
+      japanese_util::FullWidthAsciiToHalfWidthAscii(composition);
   if (composition_in_half_width_ascii == raw_text) {
     return false;
   }
@@ -137,8 +134,7 @@ bool IsRawQuery(const composer::Composer &composer,
   //
   // Note, GetQueryForPrediction omits the trailing alphabet characters of
   // the composition string and returns it.
-  std::string key;
-  composer.GetQueryForPrediction(&key);
+  const std::string key = composer.GetQueryForPrediction();
   if (Util::ContainsScriptType(key, Util::ALPHABET)) {
     *rank = 0;
     return true;
@@ -189,7 +185,7 @@ void GetAlphabetIds(const Segment &segment, uint16_t *lid, uint16_t *rid) {
 // BM_DesktopStationPredictionCorpusSuggestion 6149502840 -> 6152393270 (1.000)
 bool LanguageAwareRewriter::FillRawText(const ConversionRequest &request,
                                         Segments *segments) const {
-  if (segments->conversion_segments_size() != 1 || !request.has_composer()) {
+  if (segments->conversion_segments_size() != 1) {
     return false;
   }
 
@@ -215,8 +211,7 @@ bool LanguageAwareRewriter::FillRawText(const ConversionRequest &request,
     }
   }
 
-  std::string raw_string;
-  request.composer().GetRawString(&raw_string);
+  const std::string raw_string = request.composer().GetRawString();
 
   uint16_t lid = unknown_id_;
   uint16_t rid = unknown_id_;
@@ -243,9 +238,6 @@ bool LanguageAwareRewriter::FillRawText(const ConversionRequest &request,
     candidate->description = "もしかして";
   }
 
-  // Set usage stats
-  usage_stats::UsageStats::IncrementCount("LanguageAwareSuggestionTriggered");
-
   return true;
 }
 
@@ -258,7 +250,7 @@ bool LanguageAwareRewriter::Rewrite(const ConversionRequest &request,
 }
 
 namespace {
-bool IsLanguageAwareInputCandidate(const composer::Composer &composer,
+bool IsLanguageAwareInputCandidate(absl::string_view raw_string,
                                    const Segment::Candidate &candidate) {
   // Check candidate.prefix to filter if the candidate is probably generated
   // from LanguangeAwareInput or not.
@@ -266,36 +258,10 @@ bool IsLanguageAwareInputCandidate(const composer::Composer &composer,
     return false;
   }
 
-  std::string raw_string;
-  composer.GetRawString(&raw_string);
   if (raw_string != candidate.value) {
     return false;
   }
   return true;
 }
 }  // namespace
-
-void LanguageAwareRewriter::Finish(const ConversionRequest &request,
-                                   Segments *segments) {
-  if (!IsEnabled(request)) {
-    return;
-  }
-
-  if (segments->conversion_segments_size() != 1 || !request.has_composer()) {
-    return;
-  }
-
-  // Update usage stats
-  const Segment &segment = segments->conversion_segment(0);
-  // Ignores segments which are not converted or not committed.
-  if (segment.candidates_size() == 0 ||
-      segment.segment_type() != Segment::FIXED_VALUE) {
-    return;
-  }
-
-  if (IsLanguageAwareInputCandidate(request.composer(), segment.candidate(0))) {
-    usage_stats::UsageStats::IncrementCount("LanguageAwareSuggestionCommitted");
-  }
-}
-
 }  // namespace mozc

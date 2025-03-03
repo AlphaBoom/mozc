@@ -37,6 +37,9 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/nullability.h"
+#include "testing/friend_test.h"
+
 namespace mozc {
 
 // This class runs unneeded T's constructor along with the memory chunk
@@ -94,7 +97,7 @@ class FreeList {
     next_in_chunk_ = std::numeric_limits<size_type>::max();
   }
 
-  T* Alloc() {
+  absl::Nonnull<T*> Alloc() {
     if (next_in_chunk_ >= chunk_size_) {
       next_in_chunk_ = 0;
       // Allocate the chunk with the allocate and delay the constructions until
@@ -103,7 +106,7 @@ class FreeList {
     }
 
     // Default construct T.
-    T* ptr = pool_.back() + next_in_chunk_++;
+    absl::Nonnull<T*> ptr = pool_.back() + next_in_chunk_++;
     allocator_traits::construct(allocator_, ptr);
     return ptr;
   }
@@ -204,6 +207,8 @@ class ObjectPool {
   friend void swap(ObjectPool& lhs, ObjectPool& rhs) noexcept { lhs.swap(rhs); }
 
  private:
+  FRIEND_TEST(SegmentsTest, BasicTest);
+
   std::vector<T*> released_;
   FreeList<T> freelist_;
 };

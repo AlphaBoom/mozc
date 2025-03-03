@@ -29,12 +29,6 @@
 
 #include "config/stats_config_util.h"
 
-#include <string>
-
-#include "absl/base/casts.h"
-#include "absl/container/flat_hash_map.h"
-#include "absl/flags/flag.h"
-#include "base/singleton.h"
 #include "testing/gunit.h"
 
 #ifdef __ANDROID__
@@ -45,6 +39,9 @@
 #endif  // __ANDROID__
 
 #ifdef _WIN32
+#include "absl/base/casts.h"
+#include "absl/container/flat_hash_map.h"
+#include "base/singleton.h"
 #include "base/win32/win_api_test_helper.h"
 #endif  // _WIN32
 
@@ -124,7 +121,7 @@ class RegistryEmulator {
       }
       return i->second;
     }
-    absl::flat_hash_map<HKEY, DWORD> &usagestats_map() const {
+    const absl::flat_hash_map<HKEY, DWORD> &usagestats_map() const {
       return usagestats_map_;
     }
     int run_level() const { return run_level_; }
@@ -679,8 +676,8 @@ TEST(StatsConfigUtilTestWin, IsEnabled) {
 #ifdef __ANDROID__
 TEST(StatsConfigUtilTestAndroid, DefaultValueTest) {
   const TempFile config_file(testing::MakeTempFileOrDie());
-  ConfigHandler::SetConfigFileName(config_file.path());
-  EXPECT_EQ(ConfigHandler::GetConfigFileName(), config_file.path());
+  ConfigHandler::SetConfigFileNameForTesting(config_file.path());
+  EXPECT_EQ(ConfigHandler::GetConfigFileNameForTesting(), config_file.path());
   ConfigHandler::Reload();
 #ifdef CHANNEL_DEV
   EXPECT_TRUE(StatsConfigUtil::IsEnabled());

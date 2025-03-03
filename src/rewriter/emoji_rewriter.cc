@@ -37,19 +37,21 @@
 #include <utility>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "base/container/serialized_string_array.h"
 #include "base/japanese_util.h"
-#include "base/logging.h"
 #include "base/strings/assign.h"
 #include "base/vlog.h"
 #include "converter/segments.h"
+#include "data_manager/data_manager.h"
+#include "data_manager/emoji_data.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 #include "request/conversion_request.h"
 #include "rewriter/rewriter_util.h"
-#include "usage_stats/usage_stats.h"
 
 // EmojiRewriter:
 // Converts HIRAGANA strings to emoji characters, if they are names of emojis.
@@ -138,7 +140,7 @@ std::vector<std::unique_ptr<Segment::Candidate>> CreateEmojiData(
 }
 }  // namespace
 
-EmojiRewriter::EmojiRewriter(const DataManagerInterface &data_manager) {
+EmojiRewriter::EmojiRewriter(const DataManager &data_manager) {
   absl::string_view string_array_data;
   data_manager.GetEmojiRewriterData(&token_array_data_, &string_array_data);
   DCHECK(SerializedStringArray::VerifyData(string_array_data));
@@ -162,29 +164,6 @@ bool EmojiRewriter::Rewrite(const ConversionRequest &request,
 
   CHECK(segments != nullptr);
   return RewriteCandidates(segments);
-}
-
-void EmojiRewriter::Finish(const ConversionRequest &request,
-                           Segments *segments) {
-  if (!request.config().use_emoji_conversion()) {
-    return;
-  }
-
-  // Update usage stats
-  for (size_t i = 0; i < segments->conversion_segments_size(); ++i) {
-    const Segment &segment = segments->conversion_segment(i);
-    // Ignores segments which are not converted or not committed.
-    if (segment.candidates_size() == 0 ||
-        segment.segment_type() != Segment::FIXED_VALUE) {
-      continue;
-    }
-
-    // Check if the chosen candidate (index 0) is an emoji candidate.
-    // The Mozc converter replaces committed candidates into the 0-th index.
-    if (IsEmojiCandidate(segment.candidate(0))) {
-      usage_stats::UsageStats::IncrementCount("CommitEmoji");
-    }
-  }
 }
 
 bool EmojiRewriter::IsEmojiCandidate(const Segment::Candidate &candidate) {
@@ -218,9 +197,8 @@ bool EmojiRewriter::RewriteCandidates(Segments *segments) const {
     return true;
   };
 
-  for (size_t i = 0; i < segments->conversion_segments_size(); ++i) {
-    Segment *segment = segments->mutable_conversion_segment(i);
-    japanese_util::FullWidthAsciiToHalfWidthAscii(segment->key(), &reading);
+  for (Segment &segment : segments->conversion_segments()) {
+    reading = japanese_util::FullWidthAsciiToHalfWidthAscii(segment.key());
     if (reading.empty()) {
       continue;
     }
@@ -233,10 +211,10 @@ bool EmojiRewriter::RewriteCandidates(Segments *segments) const {
         continue;
       }
 
-      const int cost = GetEmojiCost(*segment);
+      const int cost = GetEmojiCost(segment);
       std::vector<std::unique_ptr<Segment::Candidate>> candidates =
           CreateAllEmojiData(reading, cost, utf8_emoji_list);
-      modified |= insert_candidates(std::move(candidates), segment);
+      modified |= insert_candidates(std::move(candidates), &segment);
       continue;
     }
 
@@ -246,10 +224,10 @@ bool EmojiRewriter::RewriteCandidates(Segments *segments) const {
       continue;
     }
 
-    const int cost = GetEmojiCost(*segment);
+    const int cost = GetEmojiCost(segment);
     std::vector<std::unique_ptr<Segment::Candidate>> candidates =
         CreateEmojiData(reading, cost, range, string_array_);
-    modified |= insert_candidates(std::move(candidates), segment);
+    modified |= insert_candidates(std::move(candidates), &segment);
   }
   return modified;
 }

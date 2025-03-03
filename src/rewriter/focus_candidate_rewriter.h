@@ -30,22 +30,24 @@
 #ifndef MOZC_REWRITER_FOCUS_CANDIDATE_REWRITER_H_
 #define MOZC_REWRITER_FOCUS_CANDIDATE_REWRITER_H_
 
+#include <cstddef>
 #include <cstdint>
 
 #include "absl/strings/string_view.h"
 #include "base/container/serialized_string_array.h"
 #include "converter/segments.h"
 #include "dictionary/pos_matcher.h"
+#include "request/conversion_request.h"
 #include "rewriter/rewriter_interface.h"
 
 namespace mozc {
 
-class DataManagerInterface;
+class DataManager;
 struct CounterSuffixEntry;
 
 class FocusCandidateRewriter : public RewriterInterface {
  public:
-  explicit FocusCandidateRewriter(const DataManagerInterface *data_manager);
+  explicit FocusCandidateRewriter(const DataManager &data_manager);
   FocusCandidateRewriter(const FocusCandidateRewriter &) = delete;
   FocusCandidateRewriter &operator=(const FocusCandidateRewriter &) = delete;
   ~FocusCandidateRewriter() override;

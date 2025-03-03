@@ -33,16 +33,19 @@
 #include <atlstr.h>
 #include <msctf.h>
 #include <wil/com.h>
+#include <wil/resource.h>
 
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
-#include "base/logging.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "base/win32/com.h"
 #include "base/win32/wide_char.h"
-#include "protocol/candidates.pb.h"
+#include "protocol/candidate_window.pb.h"
 #include "protocol/commands.pb.h"
 #include "protocol/renderer_command.pb.h"
 #include "win32/tip/tip_dll_module.h"
@@ -467,7 +470,7 @@ class TipUiElementDelegateImpl final : public TipUiElementDelegate {
     std::wstring msg;
     switch (status.mode()) {
       case commands::DIRECT:
-        DLOG(FATAL) << "Must not reach here.";
+        DLOG(FATAL) << "Unexpected last output status mode: DIRECT";
         break;
       case commands::HIRAGANA:
         msg = L"\u3042";

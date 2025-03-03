@@ -29,17 +29,19 @@
 
 #include "composer/internal/char_chunk.h"
 
-#include <set>
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 #include "absl/container/btree_set.h"
+#include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "base/logging.h"
 #include "base/strings/unicode.h"
 #include "base/util.h"
 #include "composer/internal/composition_input.h"
@@ -110,12 +112,15 @@ bool GetFromPending(const Table *table, const absl::string_view key,
 }  // namespace
 
 CharChunk::CharChunk(Transliterators::Transliterator transliterator,
-                     const Table *table)
-    : table_(table),
-      transliterator_(transliterator),
-      attributes_(NO_TABLE_ATTRIBUTE),
-      local_length_cache_(std::string::npos) {
-  DCHECK_NE(Transliterators::LOCAL, transliterator);
+                     std::shared_ptr<const Table> table)
+    : table_(std::move(table)), transliterator_(transliterator) {
+  DCHECK(table_);
+  DCHECK_NE(transliterator, Transliterators::LOCAL);
+}
+
+CharChunk::CharChunk(Transliterators::Transliterator transliterator)
+    : CharChunk(transliterator, Table::GetSharedDefaultTable()) {
+  DCHECK_NE(transliterator, Transliterators::LOCAL);
 }
 
 void CharChunk::Clear() {
@@ -222,47 +227,47 @@ void CharChunk::AppendFixedResult(Transliterators::Transliterator t12r,
 //
 // What we want to append here is the 'looped rule' in |kMaxRecursion| lookup.
 // Here, '{*}ぁ' -> '{*}あ' -> '{*}ぁ' is the loop.
-void CharChunk::GetExpandedResults(std::set<std::string> *results) const {
-  DCHECK(results);
-
+absl::btree_set<std::string> CharChunk::GetExpandedResults() const {
+  absl::btree_set<std::string> results;
   if (pending_.empty()) {
-    return;
+    return results;
   }
   // Append current pending string
   if (conversion_.empty()) {
-    results->insert(DeleteSpecialKeys(pending_));
+    results.insert(DeleteSpecialKeys(pending_));
   }
   std::vector<const Entry *> entries;
   table_->LookUpPredictiveAll(pending_, &entries);
   for (const Entry *entry : entries) {
     if (!entry->result().empty()) {
-      results->insert(DeleteSpecialKeys(entry->result()));
+      results.insert(DeleteSpecialKeys(entry->result()));
     }
     if (entry->pending().empty()) {
       continue;
     }
     absl::btree_set<std::string> loop_result;
-    if (!GetFromPending(table_, entry->pending(), kMaxRecursion,
+    if (!GetFromPending(table_.get(), entry->pending(), kMaxRecursion,
                         &loop_result)) {
       continue;
     }
     for (const std::string &result : loop_result) {
-      results->insert(DeleteSpecialKeys(result));
+      results.insert(DeleteSpecialKeys(result));
     }
   }
+  return results;
 }
 
 bool CharChunk::IsFixed() const { return pending_.empty(); }
 
 bool CharChunk::IsAppendable(Transliterators::Transliterator t12r,
-                             const Table *table) const {
+                             const Table &table) const {
   return !pending_.empty() &&
          (t12r == Transliterators::LOCAL || t12r == transliterator_) &&
-         table == table_;
+         &table == table_.get();
 }
 
 bool CharChunk::IsConvertible(Transliterators::Transliterator t12r,
-                              const Table *table,
+                              const Table &table,
                               const absl::string_view input) const {
   if (!IsAppendable(t12r, table)) {
     return false;
@@ -271,7 +276,7 @@ bool CharChunk::IsConvertible(Transliterators::Transliterator t12r,
   size_t key_length = 0;
   bool fixed = false;
   std::string key = absl::StrCat(pending_, input);
-  const Entry *entry = table->LookUpPrefix(key, &key_length, &fixed);
+  const Entry *entry = table.LookUpPrefix(key, &key_length, &fixed);
 
   return entry && (key.size() == key_length) && fixed;
 }

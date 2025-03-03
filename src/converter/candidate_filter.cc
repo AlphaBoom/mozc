@@ -39,9 +39,9 @@
 #include <string>
 #include <utility>
 
+#include "absl/log/check.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "base/logging.h"
 #include "base/number_util.h"
 #include "base/util.h"
 #include "base/vlog.h"
@@ -52,6 +52,7 @@
 #include "prediction/suggestion_filter.h"
 #include "protocol/commands.pb.h"
 #include "request/conversion_request.h"
+#include "request/request_util.h"
 
 namespace mozc {
 namespace converter {
@@ -215,11 +216,34 @@ bool IsSameNodeStructure(const absl::Span<const Node *const> lnodes,
   return true;
 }
 
-bool IsStrictModeEnabled(const ConversionRequest &request) {
-  return request.request().mixed_conversion() &&
-         !request.request()
-              .decoder_experiment_params()
-              .enable_realtime_conversion_v2();
+// Returns true if there is a number node that does not follow the
+bool IsNoisyNumberCandidate(const dictionary::PosMatcher &pos_matcher,
+                            const absl::Span<const Node *const> nodes) {
+  auto is_converted_number = [&](const Node &node) {
+    if (node.lid != node.rid) {
+      return false;
+    }
+    if (!Util::IsScriptType(node.key, Util::HIRAGANA)) {
+      return false;
+    }
+    return pos_matcher.IsNumber(node.lid) ||
+           pos_matcher.IsKanjiNumber(node.rid);
+  };
+  for (int i = 0; i < nodes.size(); ++i) {
+    if (!is_converted_number(*nodes[i])) {
+      continue;
+    }
+    if (i + 1 < nodes.size() && !is_converted_number(*nodes[i + 1]) &&
+        !pos_matcher.IsCounterSuffixWord(nodes[i + 1]->lid)) {
+      // "にいく": "2行く"
+      return true;
+    }
+    if (i - 1 >= 0 && pos_matcher.IsUniqueNoun(nodes[i - 1]->rid)) {
+      // "しんじゅくに": "新宿2"
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -311,14 +335,18 @@ CandidateFilter::ResultType CandidateFilter::FilterCandidateInternal(
     return result;
   }
 
-  const bool is_strict_mode = IsStrictModeEnabled(request);
-
   // In general, the cost of constrained node tends to be overestimated.
   // If the top candidate has constrained node, we skip the main body
   // of CandidateFilter, meaning that the node is not treated as the top
   // node for CandidateFilter.
   if (candidate->attributes & Segment::Candidate::CONTEXT_SENSITIVE) {
     return CandidateFilter::GOOD_CANDIDATE;
+  }
+
+  if (request_util::ShouldFilterNoisyNumberCandidate(request)) {
+    if (IsNoisyNumberCandidate(*pos_matcher_, nodes)) {
+      return CandidateFilter::BAD_CANDIDATE;
+    }
   }
 
   const size_t candidate_size = seen_.size();
@@ -479,12 +507,7 @@ CandidateFilter::ResultType CandidateFilter::FilterCandidateInternal(
       top_non_content_value == non_content_value) {
     MOZC_VLOG(1) << "don't filter if non-content value are the same: "
                  << candidate->value;
-    if (!is_strict_mode || top_nodes.size() == nodes.size()) {
-      // In strict mode, also checks the nodes size.
-      // i.e. do not allow the candidate, "め+移転+も" for the top candidate,
-      // "名店も"
-      return CandidateFilter::GOOD_CANDIDATE;
-    }
+    return CandidateFilter::GOOD_CANDIDATE;
   }
 
   // Check Katakana transliterations
@@ -542,8 +565,8 @@ CandidateFilter::ResultType CandidateFilter::FilterCandidateInternal(
           candidate->structure_cost) {
     // Stops candidates enumeration when we see sufficiently high cost
     // candidate.
-    MOZC_VLOG(2) << "cost is invalid: "
-                 << "top_cost=" << top_cost << " cost_offset=" << cost_offset
+    MOZC_VLOG(2) << "cost is invalid: " << "top_cost=" << top_cost
+                 << " cost_offset=" << cost_offset
                  << " value=" << candidate->value << " cost=" << candidate->cost
                  << " top_structure_cost=" << top_structure_cost
                  << " structure_cost=" << candidate->structure_cost
@@ -590,19 +613,19 @@ CandidateFilter::ResultType CandidateFilter::FilterCandidateInternal(
     int number_nodes = 0;
     uint16_t prev_lid = 0;
     for (const auto &node : nodes) {
-      absl::string_view value = node->value;
-      size_t mblen = 0;
       if (Util::IsScriptType(node->key, Util::NUMBER)) {
         continue;
       }
-      const Util::ScriptType first_value_script_type = Util::GetScriptType(
-          node->value.data(), node->value.data() + node->value.size(), &mblen);
+      const absl::string_view value = node->value;
+      size_t mblen = 0;
+      const Util::ScriptType first_value_script_type =
+          Util::GetFirstScriptType(value, &mblen);
       if (first_value_script_type == Util::NUMBER && prev_lid != node->lid) {
         ++number_nodes;
       } else if (first_value_script_type == Util::KANJI) {
-        const auto first_kanji = value.substr(0, mblen);
-        std::string converted;
-        NumberUtil::KanjiNumberToArabicNumber(first_kanji, &converted);
+        const absl::string_view first_kanji = value.substr(0, mblen);
+        const std::string converted =
+            NumberUtil::KanjiNumberToArabicNumber(first_kanji);
         if (first_kanji != converted && prev_lid != node->lid) {
           ++number_nodes;
         }
@@ -614,18 +637,6 @@ CandidateFilter::ResultType CandidateFilter::FilterCandidateInternal(
       return CandidateFilter::BAD_CANDIDATE;
     }
   }
-
-  if (is_strict_mode) {
-    // Filter candidates:
-    // 1) which have the different Pos structure with the top candidate, and
-    // 2) which have atypical Pos structure
-    if (!IsSameNodeStructure(top_nodes, nodes) &&
-        !IsTypicalNodeStructure(*pos_matcher_, nodes)) {
-      MOZC_CANDIDATE_LOG(candidate, "is_strict_mode");
-      return CandidateFilter::BAD_CANDIDATE;
-    }
-  }
-
   return CandidateFilter::GOOD_CANDIDATE;
 }
 

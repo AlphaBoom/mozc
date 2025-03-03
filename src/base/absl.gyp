@@ -176,6 +176,11 @@
       'toolsets': ['host', 'target'],
       'sources': [
         '<!@(<(glob_absl) status "*.cc")',
+        '<!@(<(glob_absl) status/internal "*.cc")',
+      ],
+      'include_dirs': [
+        '<(gmock_dir)/include',
+        '<(gtest_dir)/include',
       ],
       'dependencies': [
         'absl_base',

@@ -31,6 +31,7 @@
 #define MOZC_CONVERTER_SEGMENTS_MATCHERS_H_
 
 #include <algorithm>
+#include <cstddef>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -38,6 +39,7 @@
 #include "absl/strings/str_format.h"
 #include "converter/segments.h"
 #include "testing/gmock.h"
+#include "testing/gunit.h"
 
 namespace mozc {
 
@@ -99,6 +101,7 @@ MATCHER_P(EqualsSegment, segment, "") {
   }
   COMPARE_PROPERTY(segment_type);
   COMPARE_PROPERTY(key);
+  COMPARE_PROPERTY(key_len);
 #undef COMPARE_PROPERTY
 
   // Compare candidates.
@@ -185,8 +188,8 @@ template <typename T>
   return CandidatesAreArrayMatcherImpl(matchers);
 }
 
-template <typename T>
-::testing::Matcher<Segment> CandidatesAreArray(const std::vector<T> &matchers) {
+template <typename Container>
+::testing::Matcher<Segment> CandidatesAreArray(const Container &matchers) {
   return CandidatesAreArrayMatcherImpl(matchers);
 }
 

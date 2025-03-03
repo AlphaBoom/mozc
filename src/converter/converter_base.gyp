@@ -75,12 +75,14 @@
       'target_name': 'segments',
       'type': 'static_library',
       'sources': [
-        '<(gen_out_mozc_dir)/dictionary/pos_matcher.h',
+        '<(gen_out_mozc_dir)/dictionary/pos_matcher_impl.inc',
+        'candidate.cc',
         'candidate_filter.cc',
         'nbest_generator.cc',
         'segments.cc',
       ],
       'dependencies': [
+        '<(mozc_oss_src_dir)/base/absl.gyp:absl_log',
         '<(mozc_oss_src_dir)/base/absl.gyp:absl_strings',
         '<(mozc_oss_src_dir)/base/base.gyp:base',
         '<(mozc_oss_src_dir)/dictionary/dictionary_base.gyp:pos_matcher',

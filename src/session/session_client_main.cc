@@ -34,12 +34,12 @@
 #include <string>
 
 #include "absl/flags/flag.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "base/file_stream.h"
 #include "base/file_util.h"
 #include "base/init_mozc.h"
-#include "base/logging.h"
-#include "base/protobuf/message.h"
+#include "base/protobuf/text_format.h"
 #include "base/system_util.h"
 #include "base/util.h"
 #include "composer/key_parser.h"
@@ -57,7 +57,7 @@ namespace {
 
 void Loop(std::istream *input, std::ostream *output) {
   std::unique_ptr<EngineInterface> engine = EngineFactory::Create().value();
-  auto session = std::make_unique<session::Session>(engine.get());
+  auto session = std::make_unique<session::Session>(*engine);
 
   commands::Command command;
   std::string line;
@@ -67,7 +67,7 @@ void Loop(std::istream *input, std::ostream *output) {
       continue;
     }
     if (line.empty()) {
-      session = std::make_unique<session::Session>(engine.get());
+      session = std::make_unique<session::Session>(*engine);
       *output << std::endl << "## New session" << std::endl << std::endl;
       continue;
     }
@@ -83,8 +83,10 @@ void Loop(std::istream *input, std::ostream *output) {
       LOG(ERROR) << "Command failure";
     }
 
-    *output << protobuf::Utf8Format(command);
-    LOG(INFO) << protobuf::Utf8Format(command);
+    std::string textpb;
+    protobuf::TextFormat::PrintToString(command, &textpb);
+    *output << textpb;
+    LOG(INFO) << command;
   }
 }
 

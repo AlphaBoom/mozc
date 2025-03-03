@@ -29,6 +29,7 @@
 
 #include "rewriter/focus_candidate_rewriter.h"
 
+#include <cstddef>
 #include <iterator>
 #include <memory>
 #include <string>
@@ -38,6 +39,7 @@
 #include "base/number_util.h"
 #include "converter/segments.h"
 #include "data_manager/testing/mock_data_manager.h"
+#include "rewriter/rewriter_interface.h"
 #include "testing/gunit.h"
 #include "testing/mozctest.h"
 #include "transliteration/transliteration.h"
@@ -62,7 +64,7 @@ void AddCandidateWithContentValue(Segment *segment,
 class FocusCandidateRewriterTest : public testing::TestWithTempUserProfile {
  protected:
   void SetUp() override {
-    rewriter_ = std::make_unique<FocusCandidateRewriter>(&mock_data_manager_);
+    rewriter_ = std::make_unique<FocusCandidateRewriter>(mock_data_manager_);
   }
 
   const RewriterInterface *GetRewriter() { return rewriter_.get(); }
